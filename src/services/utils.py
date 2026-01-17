@@ -242,8 +242,10 @@ def get_fae_metrics_and_embeddings(model, X_fin_past, X_macro_past, Y_fin_future
             x_macro_batch = x_macro_batch.to(DEVICE)
             y_fin_flat = x_fin_batch.view(x_fin_batch.size(0), -1)
             
+            x_masked, _ = apply_time_mask(x_fin_batch, mask_ratio=0.25)
+            
             # Model returns: forecast, z_fin_e, z_macro_e
-            forecast_flat, _, _ = model(x_fin_batch, x_macro_batch)
+            forecast_flat, _, _ = model(x_masked, x_macro_batch)
             
             # Calculate MSE per sequence
             squared_errors = (forecast_flat - y_fin_flat)**2
