@@ -1,0 +1,15 @@
+.history/
+.vscode/
+
+mlartifacts/
+mlruns/
+mlruns_artifacts/
+runs/
+
+data/in
+data/out
+
+**/__pycache__/
+*.png
+*.parquet
+*.pth

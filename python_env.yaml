@@ -1,0 +1,17 @@
+# python_env.yaml
+name: fae_forecasting_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10 # Or your specific Python version
+  - pip
+  - pandas
+  - numpy
+  - matplotlib
+  - torch
+  - pip:
+    - geoopt
+    - mlflow
+    - psycopg2-binary
+    - pyarrow
