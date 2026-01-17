@@ -27,7 +27,7 @@ parser.add_argument("--num_iterations_pretrain", type=int, default=1)
 args = parser.parse_args()
 
 mlflow.set_tracking_uri("http://localhost:5000")
-mlflow.set_experiment("Financial_FAE_Comparison")
+mlflow.set_experiment("BERT-like training")
 
 
 class ModelTrain:
@@ -117,12 +117,12 @@ class ModelTrain:
 
         # PHASE 1: PRE-TRAINING (Optional)
         if self.args.pretrain:
-            print(f"--- PRE-TRAINING ENABLED: Reconstructing Xt -> Xt ---")
-            pretrain_reconstruction(
+            print(f"--- BERT-LIKE TRAINING: Reconstructing Xt -> Xt ---")
+            final_loss = bert_like_train(
                 self.model, 
                 self.X_fin_tensor_past, 
                 self.X_macro_tensor_past, 
-                epochs=max(1, self.args.epochs // 2), 
+                epochs=self.args.epochs, 
                 batch_size=self.args.batch_size, 
                 lr=self.args.learning_rate,
                 mask_ratio=0.25, #TODO: keep the macro data
@@ -130,20 +130,6 @@ class ModelTrain:
             )
         else:
             print(f"--- SKIPPING PRE-TRAINING: Direct Fine-tuning ---")
-
-        # PHASE 2: FINE-TUNING (Xt -> Y)
-        # We use the full budget here for the actual task
-        final_loss = train_hybrid_fae(
-            self.model, 
-            self.X_fin_tensor_past, 
-            self.X_macro_tensor_past, 
-            self.Y_fin_tensor_future, 
-            epochs=self.args.epochs, 
-            batch_size=self.args.batch_size, 
-            lr=self.args.learning_rate,
-            lambda_ortho=self.lambda_ortho, 
-            writer=self.writer
-        )
 
         mlflow.log_metric("final_mse_loss", final_loss)
         

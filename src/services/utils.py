@@ -42,7 +42,7 @@ def apply_time_mask(x, mask_ratio=0.25):
     
     return x_masked * mask, mask
 
-def pretrain_reconstruction(model, X_fin, X_macro, epochs, batch_size, lr, mask_ratio=0.3,num_augmentations=5):
+def bert_like_train(model, X_fin, X_macro, epochs, batch_size, lr, mask_ratio=0.3,num_augmentations=5):
     """
     PHASE 1: Self-Supervised Learning. 
     Reconstructs X_fin from a corrupted version of itself.
@@ -83,6 +83,8 @@ def pretrain_reconstruction(model, X_fin, X_macro, epochs, batch_size, lr, mask_
         avg_loss = total_recon_loss / (len(loader) * num_augmentations)
         mlflow.log_metric("pretrain_recon_loss", avg_loss, step=epoch)
         print(f"Pre-train Epoch {epoch+1}, Recon Loss: {avg_loss:.6f}")
+        
+    return avg_loss
         
 
 # --- UPDATED FUNCTION WITH MLFLOW AND TENSORBOARD LOGGING ---
@@ -236,15 +238,15 @@ def get_fae_metrics_and_embeddings(model, X_fin_past, X_macro_past, Y_fin_future
     
     with torch.no_grad():
         for x_fin_batch, x_macro_batch, y_fin_batch in loader:
-            x_fin_batch = x_fin_batch.to(DEVICE); x_macro_batch = x_macro_batch.to(DEVICE)
-            y_fin_batch = y_fin_batch.to(DEVICE)
-            y_fin_flat_future = y_fin_batch.view(y_fin_batch.size(0), -1)
+            x_fin_batch = x_fin_batch.to(DEVICE); 
+            x_macro_batch = x_macro_batch.to(DEVICE)
+            y_fin_flat = x_fin_batch.view(x_fin_batch.size(0), -1)
             
             # Model returns: forecast, z_fin_e, z_macro_e
             forecast_flat, _, _ = model(x_fin_batch, x_macro_batch)
             
             # Calculate MSE per sequence
-            squared_errors = (forecast_flat - y_fin_flat_future)**2
+            squared_errors = (forecast_flat - y_fin_flat)**2
             sequence_mse = squared_errors.mean(dim=-1).cpu().numpy()
             
             all_errors.extend(sequence_mse.tolist())

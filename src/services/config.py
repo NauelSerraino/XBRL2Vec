@@ -2,8 +2,8 @@ import os
 import torch
 
 
-SEQ_LEN = 12                
-FORECAST_LEN = 12 #4            
+SEQ_LEN = 24                
+FORECAST_LEN = 24 #4            
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 MACRO_COLUMNS = ['GDP', 'INDPRO', 'PSAVERT', 'CPIAUCSL', 'DFF',
