@@ -13,8 +13,8 @@ import matplotlib.pyplot as plt
 import mlflow
 
 from autoencoder_dlinear_conditioner import CompanyEmbeddingAE
-from services.config import DEVICE, MACRO_COLUMNS, SEQ_LEN
-from services.utils import filter_columns, create_aligned_dataset, seed_everything
+from services.config import DEVICE, SEQ_LEN
+from services.utils import * 
 
 # ----------------------------
 # 1. ARGPARSE
@@ -24,7 +24,7 @@ parser.add_argument("--latent_factors", nargs="+", type=float, default=[0.5, 1, 
 parser.add_argument("--epochs", type=int, default=20)
 parser.add_argument("--batch_size", type=int, default=32)
 parser.add_argument("--learning_rate", type=float, default=1e-3)
-parser.add_argument("--mask_prob", type=float, default=0)
+parser.add_argument("--mask_prob", type=float, default=0.2)
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--use_mask", type=int, default=False)
 args = parser.parse_args()
@@ -98,6 +98,7 @@ bs_df = pd.read_parquet(f"{IN_DIR}/bs_pct_train.parquet")
 is_df = pd.read_parquet(f"{IN_DIR}/ins_pct_train.parquet")
 cf_df = pd.read_parquet(f"{IN_DIR}/cf_pct_train.parquet")
 macro_df = pd.read_parquet(f"{IN_DIR}/exog.parquet").rename(columns={"observation_date": "quarter"})
+metadata_sector_df = pd.read_parquet(f"{IN_DIR}/metadata.parquet")[["ticker", "sector"]].drop_duplicates()
 
 quarters_to_delete = [f"201{j}Q{i}" for j in range(1, 3) for i in range(1, 5)]
 bs_df = bs_df[~bs_df.quarter.isin(quarters_to_delete)]
@@ -105,7 +106,8 @@ is_df = is_df[~is_df.quarter.isin(quarters_to_delete)]
 cf_df = cf_df[~cf_df.quarter.isin(quarters_to_delete)]
 macro_df = macro_df[~macro_df.quarter.isin(quarters_to_delete)]
 
-bs_df, is_df, cf_df = filter_columns(bs_df, is_df, cf_df, cond="DIFF_Q")
+bs_df, is_df, cf_df, macro_df = filter_columns(bs_df, is_df, cf_df, macro_df, cond="DIFF_Y")
+MACRO_COLUMNS = macro_df.columns.tolist()[1:]
 
 # ----------------------------
 # 4. CREATE ALIGNED DATASET
@@ -139,9 +141,82 @@ os.makedirs("runs", exist_ok=True)
 # ----------------------------
 # 6. FUNCTION
 # ----------------------------
+def compute_saliency_per_company(
+    model,
+    X_fin,
+    X_macro,
+    fin_cols,
+    macro_cols,
+    meta_df,
+    metadata_sector_df,
+    run_name,
+    mode="latent",
+    device=DEVICE,
+):
+    model.eval().to(device)
+    tickers = meta_df["ticker"].unique()
+    rows = []
 
-import pandas as pd
-import torch
+    for ticker in tickers:
+        idx = meta_df[meta_df["ticker"] == ticker].index.tolist()
+        if len(idx) == 0:
+            continue
+
+        xf = X_fin[idx].to(device).requires_grad_(True)
+        xm = X_macro[idx].to(device).requires_grad_(True)
+
+        if mode == "latent":
+            z, _ = model(xf, xm)
+            target = z.abs().sum()
+        else:
+            _, x_hat = model(xf, xm)
+            target = x_hat.abs().sum()
+
+        target.backward()
+
+        saliency_fin = xf.grad.abs().mean(dim=(0, 1)).cpu().numpy()
+        saliency_macro = xm.grad.abs().mean(dim=(0, 1)).cpu().numpy()
+
+        row = {"ticker": ticker}
+        row.update(dict(zip(fin_cols, saliency_fin)))
+        row.update(dict(zip(macro_cols, saliency_macro)))
+        rows.append(row)
+
+    # ---------- RAW PER COMPANY ----------
+    df_out = pd.DataFrame(rows)
+    df_out = df_out.merge(metadata_sector_df, on="ticker", how="left")
+
+    df_out = df_out.set_index("ticker")
+    csv_path = f"tables/saliency_per_company_{mode}_{run_name}.csv"
+    df_out.to_csv(csv_path)
+    mlflow.log_artifact(csv_path)
+
+    # ---------- SECTOR AGGREGATION ----------
+    df_sector = (
+        df_out
+        .reset_index()
+        .groupby("sector")[fin_cols + macro_cols]
+        .mean()
+    )
+
+    df_sector["fin_exposure"] = df_sector[fin_cols].sum(axis=1)
+    df_sector["macro_exposure"] = df_sector[macro_cols].sum(axis=1)
+    df_sector["macro_fin_ratio"] = (
+        df_sector["macro_exposure"] /
+        (df_sector["fin_exposure"] + 1e-9)
+    )
+
+    df_sector = df_sector.sort_values(
+        "macro_exposure",
+        ascending=False
+    )
+
+    # Save sector CSV
+    csv_sector = f"tables/saliency_per_sector_{mode}_{run_name}.csv"
+    df_sector.to_csv(csv_sector)
+    mlflow.log_artifact(csv_sector)
+
+    return df_out, df_sector
 
 def inspect_company_ae(
     model,
@@ -207,8 +282,8 @@ def inspect_company_ae(
 
     return dfs
 
-def train_masked_ae(model, X_fin, X_macro, num_epochs=10, lr=1e-3, batch_size=32, 
-                    device=DEVICE, mask_prob=0.2, alpha=1.0, repeats=1, seed=42, use_mask=True):
+def train_masked_ae(model, X_fin, X_macro, model_type:str, num_epochs=10, lr=1e-3, batch_size=32, 
+                    device=DEVICE, mask_prob=0.2, alpha=1.0, repeats=1, seed=42, use_mask=True,):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -273,6 +348,12 @@ def train_masked_ae(model, X_fin, X_macro, num_epochs=10, lr=1e-3, batch_size=32
         avg_mae = total_mae / n
         avg_smooth = total_smooth / n
         metrics.append({"epoch": epoch, "mse": avg_mse, "mae": avg_mae, "smooth": avg_smooth})
+        
+        mlflow.log_metrics({
+            f"mse_{model_type}": avg_mse,
+            f"mae_{model_type}": avg_mae,
+            f"smooth_l1_{model_type}": avg_smooth
+        }, step=epoch)
 
         print(f"[INFO] Epoch {epoch+1}/{num_epochs} MSE={avg_mse:.6f} MAE={avg_mae:.6f} Smooth={avg_smooth:.6f}")
 
@@ -493,59 +574,66 @@ def compute_macro_exposure_both(
         "blind_cosine": blind_cos.cpu().numpy(),
     }
 
-def log_macro_exposure(exposure, run_name, company_names, label):
+def log_macro_exposure(
+        exposure_blind,
+        exposure_contextual,
+        run_name,
+        metric_type  # "cosine" or "l2"
+    ):
     """
-    exposure: np.ndarray
-    company_names: aligned with exposure
-    label: contextual_l2, contextual_cosine, blind_l2, blind_cosine
+    exposure_blind: np.ndarray
+    exposure_contextual: np.ndarray
+    metric_type: "cosine" or "l2"
     """
 
-    df_exposure = pd.DataFrame({
-        "company_name": company_names,
-        "macro_exposure": exposure
-    }).sort_values("macro_exposure", ascending=False)
+    os.makedirs("tables", exist_ok=True)
+    os.makedirs("plots", exist_ok=True)
+
+    # ---------- BUILD DATAFRAME ----------
+    df = pd.DataFrame({
+        "blind": exposure_blind,
+        "contextual": exposure_contextual
+    })
 
     # ---------- SAVE CSV ----------
-    csv_path = f"tables/macro_exposure_{label}_{run_name}.csv"
-
-    df_exposure.to_csv(csv_path, index=False)
+    csv_path = f"tables/macro_exposure_{metric_type}_{run_name}.csv"
+    df.to_csv(csv_path, index=False)
     mlflow.log_artifact(csv_path)
 
     # ---------- LOG METRICS ----------
-    mean_val = float(df_exposure["macro_exposure"].mean())
-    std_val = float(df_exposure["macro_exposure"].std())
-    cv_val = std_val / (mean_val + 1e-9)
+    for label, exposure in [("blind", exposure_blind), ("contextual", exposure_contextual)]:
 
-    mlflow.log_metric(f"{label}_mean", mean_val)
-    mlflow.log_metric(f"{label}_std", std_val)
-    mlflow.log_metric(f"{label}_cv", cv_val)
+        mean_val = float(np.mean(exposure))
+        std_val = float(np.std(exposure))
+        cv_val = std_val / (mean_val + 1e-9)
 
-    # ---------- HISTOGRAM ----------
-    plt.figure(figsize=(6,4))
+        mlflow.log_metric(f"{metric_type}_{label}_mean", mean_val)
+        mlflow.log_metric(f"{metric_type}_{label}_std", std_val)
+        mlflow.log_metric(f"{metric_type}_{label}_cv", cv_val)
 
-    plt.hist(
-        df_exposure["macro_exposure"],
-        bins=30,
-        color="#1f77b4"
-    )
+    # ---------- KERNEL DENSITY PLOT ----------
+    plt.figure(figsize=(7, 4))
 
-    plt.title(f"Macro Exposure Distribution – {label}")
+    pd.Series(exposure_blind).plot.kde(label="Blind", linewidth=2)
+    pd.Series(exposure_contextual).plot.kde(label="Contextual", linewidth=2)
+
+    plt.title(f"Macro Exposure Density – {metric_type.upper()}")
     plt.xlabel("Exposure")
-    plt.ylabel("Frequency")
+    plt.ylabel("Density")
 
+    plt.legend()
     plt.tight_layout()
 
-    fig_path = f"plots/macro_exposure_{label}_{run_name}.png"
+    fig_path = f"plots/macro_exposure_density_{metric_type}_{run_name}.png"
 
     plt.savefig(fig_path)
     plt.close()
 
     mlflow.log_artifact(fig_path)
 
-    print(f"[INFO] Logged macro exposure ({label})")
+    print(f"[INFO] Logged macro exposure comparison ({metric_type})")
 
-    return df_exposure
-
+    return df
 
 def log_importance_matrix(df, run_name, label):
     csv_path = f"tables/importance_matrix_{label}_{run_name}.csv"
@@ -768,7 +856,6 @@ def prove_macro_utility(
 
     return df
 
-
 def plot_importance_summary(imp_ctx, imp_blind, run_name):
     financial_cols = [c for c in imp_ctx.columns if c in fin_cols]
     macro_cols = [c for c in imp_ctx.columns if c in MACRO_COLUMNS]
@@ -840,7 +927,8 @@ for factor in args.latent_factors:
             alpha=0,
             repeats=10,
             seed=args.seed,
-            use_mask=args.use_mask
+            use_mask=args.use_mask,
+            model_type="contextual",
         )
 
 
@@ -858,7 +946,8 @@ for factor in args.latent_factors:
             device=DEVICE,
             alpha=0,
             repeats=10,
-            seed=args.seed
+            seed=args.seed,
+            model_type="blind",
         )
 
         # Log final metrics
@@ -873,6 +962,28 @@ for factor in args.latent_factors:
         imp_mat_blind = get_importance_matrix(model_blind, X_fin, torch.zeros_like(X_macro), fin_cols, MACRO_COLUMNS, "blind")
         log_importance_matrix(imp_mat_ctx, run_name, "contextual")
         log_importance_matrix(imp_mat_blind, run_name, "blind")
+        
+        log_company_distance_heatmaps(model_ctx, X_fin, X_macro, meta_df["ticker"], run_name)
+
+        # log_distance_preservation(model_ctx, X_fin, run_name)
+
+        # log_latent_projection(model_ctx, X_fin, meta_df["ticker"], run_name)
+
+        log_macro_sensitivity_barplot(
+            model_ctx,
+            X_fin,
+            X_macro,
+            MACRO_COLUMNS,
+            run_name
+        )
+
+        r2_metric = log_variance_analysis(
+            model_ctx,
+            X_fin,
+            X_macro,
+            run_name
+        )
+        mlflow.log_table(r2_metric.reset_index(), "r2_metrics.json")
 
         # Importance summary plot
         plot_importance_summary(imp_mat_ctx, imp_mat_blind, run_name)
@@ -888,32 +999,64 @@ for factor in args.latent_factors:
             X_macro
         )
 
-        log_macro_exposure(
-            exposures["contextual_l2"],
-            run_name,
-            meta_df["ticker"].values,
-            label="contextual_l2"
-        )
-
-        log_macro_exposure(
-            exposures["contextual_cosine"],
-            run_name,
-            meta_df["ticker"].values,
-            label="contextual_cosine"
-        )
-
-        log_macro_exposure(
-            exposures["blind_l2"],
-            run_name,
-            meta_df["ticker"].values,
-            label="blind_l2"
+        exposures = compute_macro_exposure_both(
+            model_ctx,
+            model_blind,
+            X_fin,
+            X_macro
         )
 
         log_macro_exposure(
             exposures["blind_cosine"],
+            exposures["contextual_cosine"],
             run_name,
-            meta_df["ticker"].values,
-            label="blind_cosine"
+            metric_type="cosine"
+        )
+
+        log_macro_exposure(
+            exposures["blind_l2"],
+            exposures["contextual_l2"],
+            run_name,
+            metric_type="l2"
+        )
+        
+        (
+            df_latent, df_recon,
+            sector_latent, sector_recon,
+            latent_ratio, recon_ratio
+        ) = compute_full_saliency(
+            model_ctx,
+            X_fin,
+            X_macro,
+            fin_cols,
+            MACRO_COLUMNS,
+            meta_df,
+            metadata_sector_df,
+            run_name,
+        )
+        
+        saliency_latent_per_co, saliency_latent_sector = compute_saliency_per_company(
+            model_ctx,
+            X_fin,
+            X_macro,
+            fin_cols,
+            MACRO_COLUMNS,
+            meta_df,
+            metadata_sector_df,
+            run_name,
+            mode="latent"
+        )
+
+        saliency_recon_per_co, saliency_recon_sector = compute_saliency_per_company(
+            model_ctx,
+            X_fin,
+            X_macro,
+            fin_cols,
+            MACRO_COLUMNS,
+            meta_df,
+            metadata_sector_df,
+            run_name,
+            mode="reconstruction"
         )
         
         # Save models
@@ -926,5 +1069,72 @@ for factor in args.latent_factors:
         
         # dfs = inspect_company_ae(model_ctx, X_fin, X_macro, n_obs=100)
 
+        print("[INFO] Loading TEST data")
+
+        bs_test_df = pd.read_parquet(f"{IN_DIR}/bs_pct_test.parquet")
+        is_test_df = pd.read_parquet(f"{IN_DIR}/ins_pct_test.parquet")
+        cf_test_df = pd.read_parquet(f"{IN_DIR}/cf_pct_test.parquet")
+
+        bs_test_df = bs_test_df[~bs_test_df.quarter.isin(quarters_to_delete)]
+        is_test_df = is_test_df[~is_test_df.quarter.isin(quarters_to_delete)]
+        cf_test_df = cf_test_df[~cf_test_df.quarter.isin(quarters_to_delete)]
+
+        bs_test_df, is_test_df, cf_test_df, macro_df = filter_columns(
+            bs_test_df,
+            is_test_df,
+            cf_test_df,
+            macro_df,
+            cond="DIFF_Y"
+        )
+
+        X_fin_test_raw, X_macro_test_raw, _, meta_test_df, _, _, _ = create_aligned_dataset(
+            bs_test_df,
+            is_test_df,
+            cf_test_df,
+            macro_df
+        )
+
+        # Apply SAME transforms
+        X_fin_test = symmetric_log_transform(X_fin_test_raw)
+        X_macro_test = symmetric_log_transform(X_macro_test_raw)
+
+        # Apply SAME macro customization
+        macro_weights_test = compute_company_macro_weights(X_fin_test, X_macro_test)
+        X_macro_test = customize_macro_input(X_macro_test, macro_weights_test)
+        
+        # ----------------------------
+        # OOS EVALUATION
+        # ----------------------------
+
+        oos_ctx = evaluate_oos(
+            model_ctx,
+            X_fin_test,
+            X_macro_test,
+            "contextual"
+        )
+
+        oos_blind = evaluate_oos(
+            model_blind,
+            X_fin_test,
+            torch.zeros_like(X_macro_test),
+            "blind"
+        )
+
+        metrics = {
+            "oos_mse_contextual": oos_ctx["mse"],
+            "oos_mae_contextual": oos_ctx["mae"],
+            "oos_mse_blind": oos_blind["mse"],
+            "oos_mae_blind": oos_blind["mae"]
+        }
+
+        mlflow.log_metrics(metrics)
+        # Critical metric: macro utility gap
+        mlflow.log_metric(
+            "oos_macro_gain",
+            oos_blind["mse"] - oos_ctx["mse"]
+        )
+
+        print(f"[INFO] OOS Macro Gain: {oos_blind['mse'] - oos_ctx['mse']:.6f}")
+        
 
 print("[INFO] All experiments completed!")
