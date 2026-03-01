@@ -9,6 +9,8 @@ runs/
 
 data/in
 data/out
+tables/
+deprecated/
 
 **/__pycache__/
 *.png
