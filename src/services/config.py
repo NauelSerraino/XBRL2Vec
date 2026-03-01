@@ -2,7 +2,7 @@ import os
 import torch
 
 
-SEQ_LEN = 24                
+SEQ_LEN = 48                
 FORECAST_LEN = 24 #4            
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -14,8 +14,8 @@ MACRO_COLUMNS = ['GDP', 'INDPRO', 'PSAVERT', 'CPIAUCSL', 'DFF',
        'UNEMPLOY_DIFF_Y']
 
 SIZE_METRIC_COLUMN = 'Total Revenue' 
-LATENT_FIN_DIM_HYP = 75 
-LATENT_MACRO_DIM_HYP = 75
+LATENT_FIN_DIM_HYP = 20 
+LATENT_MACRO_DIM_HYP = 20
 
 TICKERS = ['COHR',
  'ENFY',
