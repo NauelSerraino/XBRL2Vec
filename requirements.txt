@@ -1,0 +1,7 @@
+geoopt==0.5.1
+matplotlib==3.10.8
+mlflow==3.1.4
+mlflow_skinny==3.1.4
+numpy==1.24.4
+pandas==2.3.3
+torch==2.9.1
