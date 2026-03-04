@@ -76,7 +76,7 @@ def seed_everything(seed: int) -> None:
 
 def parse_args() -> TrainConfig:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--latent_factors", nargs="+", type=float, default=[0.5, 1, 2, 3])
+    parser.add_argument("--latent_factors", nargs="+", type=float, default=[0.5, 0.8, 1, 2])
     parser.add_argument("--epochs",         type=int,   default=20)
     parser.add_argument("--batch_size",     type=int,   default=32)
     parser.add_argument("--learning_rate",  type=float, default=1e-3)

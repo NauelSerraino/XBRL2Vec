@@ -173,9 +173,7 @@ def compute_full_saliency(
         plt.title(f"Top {top_n} Feature Saliency ({mode.value}) – {logger.run_name}")
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.SALIENCY, f"global_features_{mode.value}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.SALIENCY, f"global_features_{mode.value}")
 
         # ---- Sector exposure ----
         attr_macro_sample = attr_macro.abs().mean(dim=1).cpu().numpy()  # (N, M)
@@ -205,9 +203,7 @@ def compute_full_saliency(
             plt.title(f"{label.replace('15',' 15').title()} Macro-Exposed Sectors – {mode.value}")
             plt.tight_layout()
 
-            path = logger.plot_path(ArtifactGroup.SALIENCY, f"sector_exposure_{label}_{mode.value}")
-            plt.savefig(path); plt.close()
-            logger.log(path)
+            logger.log_figure(plt.gcf(), ArtifactGroup.SALIENCY, f"sector_exposure_{label}_{mode.value}")
 
         results[mode.value] = {"df_global": df_global, "df_sector": df_sector, "macro_ratio": macro_ratio}
 
@@ -251,9 +247,7 @@ def compute_full_saliency(
         )
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.SALIENCY, f"sector_bubble_{sort_label}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(fig, ArtifactGroup.SALIENCY, f"sector_bubble_{sort_label}")
 
     print(f"  Latent macro ratio:         {results['latent']['macro_ratio']:.4f}")
     print(f"  Reconstruction macro ratio: {results['reconstruction']['macro_ratio']:.4f}")

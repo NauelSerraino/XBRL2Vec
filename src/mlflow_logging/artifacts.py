@@ -68,6 +68,12 @@ class ArtifactLogger:
     def log(self, path: Path) -> None:
         mlflow.log_artifact(str(path))
 
+    def log_figure(self, fig, group: ArtifactGroup, name: str, save_kwargs: dict | None = None) -> None:
+        import matplotlib.pyplot as plt
+        artifact_file = f"plots/{group.value} - {name}_{self.run_name}.png"
+        mlflow.log_figure(fig, artifact_file, save_kwargs=save_kwargs)
+        plt.close(fig)
+
     def log_table(self, df, group: ArtifactGroup, name: str) -> Path:
         path = self.table_path(group, name)
         df.to_csv(path)
