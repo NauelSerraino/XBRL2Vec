@@ -54,9 +54,7 @@ def log_zero_sparsity(
     plt.xlim(0, 100)
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.DISTRIBUTION, "zero_sparsity")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, "zero_sparsity")
 
 
 def log_financial_boxplots(
@@ -79,9 +77,7 @@ def log_financial_boxplots(
         plt.grid(axis="x", alpha=0.3, linestyle="--")
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.DISTRIBUTION, f"financial_boxenplot_chunk_{i // chunk_size}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, f"financial_boxenplot_chunk_{i // chunk_size}")
 
 
 def log_macro_boxplots(
@@ -104,9 +100,7 @@ def log_macro_boxplots(
         plt.grid(axis="x", linestyle="--", alpha=0.3)
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.DISTRIBUTION, f"macro_boxenplot_chunk_{i // chunk_size}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, f"macro_boxenplot_chunk_{i // chunk_size}")
 
 
 def log_correlation_matrix(
@@ -135,9 +129,7 @@ def log_correlation_matrix(
     plt.title(f"Feature Correlation Matrix – {logger.run_name}")
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.DISTRIBUTION, "correlation_matrix")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, "correlation_matrix")
 
     return corr
 
@@ -166,9 +158,7 @@ def log_loss_comparison(
     plt.suptitle(f"Loss Comparison – {logger.run_name}")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-    path = logger.plot_path(ArtifactGroup.TRAINING, "loss_comparison")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(fig, ArtifactGroup.TRAINING, "loss_comparison")
 
 
 # ---------------------------------------------------------------------------
@@ -206,9 +196,7 @@ def log_importance_matrix(
     plt.title(f"Importance Matrix ({label}) – {logger.run_name}")
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.IMPORTANCE, f"matrix_{label}")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.IMPORTANCE, f"matrix_{label}")
 
 
 def log_importance_summary(
@@ -237,9 +225,7 @@ def log_importance_summary(
     plt.title(f"Importance Summary – {logger.run_name}")
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.IMPORTANCE, "summary_contextual_vs_blind")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.IMPORTANCE, "summary_contextual_vs_blind")
 
 
 # ---------------------------------------------------------------------------
@@ -301,9 +287,7 @@ def log_macro_embedding_tournament(
         plt.grid(axis="y", linestyle="--", alpha=0.3)
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.TOURNAMENT, f"macro_embedding_{name}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.TOURNAMENT, f"macro_embedding_{name}")
 
     return df
 
@@ -333,9 +317,7 @@ def log_macro_exposure_density(
     plt.xlabel("Exposure"); plt.ylabel("Density")
     plt.legend(); plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.TOURNAMENT, f"macro_exposure_density_{metric}")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.TOURNAMENT, f"macro_exposure_density_{metric}")
 
     return df
 
@@ -384,9 +366,7 @@ def log_company_distance_scatter(
     plt.colorbar(hb1, ax=axes[1], label="log(Counts)")
 
     plt.tight_layout()
-    path = logger.plot_path(ArtifactGroup.EMBEDDING, "distance_scatter_cosine_euclidean")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(fig, ArtifactGroup.EMBEDDING, "distance_scatter_cosine_euclidean")
 
 
 def log_macro_sensitivity_barplot(
@@ -420,9 +400,7 @@ def log_macro_sensitivity_barplot(
     plt.gca().invert_yaxis()
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.EMBEDDING, "macro_sensitivity_barplot")
-    plt.savefig(path, dpi=150, bbox_inches="tight"); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.EMBEDDING, "macro_sensitivity_barplot", save_kwargs={"dpi": 150, "bbox_inches": "tight"})
 
 
 def log_variance_analysis_plot(
