@@ -48,6 +48,8 @@ class TrainConfig(BaseModel):
     batch_size: int = 32
     learning_rate: float = 1e-3
     seed: int = 42
+    t_in: int = 12
+    t_out: int = 4
 
     @classmethod
     def from_args(cls, args) -> "TrainConfig":
@@ -57,6 +59,8 @@ class TrainConfig(BaseModel):
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             seed=args.seed,
+            t_in=args.t_in,
+            t_out=args.t_out,
         )
 
 
