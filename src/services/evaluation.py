@@ -39,16 +39,18 @@ def evaluate_oos(
     X_fin: torch.Tensor,
     X_macro: torch.Tensor,
     label: str,
+    Y_fin: torch.Tensor | None = None,
     device: torch.device = DEVICE,
 ) -> OOSResult:
     print(f"[INFO] OOS evaluation ({label})")
+    y_target = (Y_fin if Y_fin is not None else X_fin).to(device)
     model.eval().to(device)
 
     with torch.no_grad():
         _, x_hat = model(X_fin.to(device), X_macro.to(device))
-        mse    = F.mse_loss(x_hat, X_fin.to(device)).item()
-        mae    = F.l1_loss(x_hat, X_fin.to(device)).item()
-        smooth = F.smooth_l1_loss(x_hat, X_fin.to(device)).item()
+        mse    = F.mse_loss(x_hat, y_target).item()
+        mae    = F.l1_loss(x_hat, y_target).item()
+        smooth = F.smooth_l1_loss(x_hat, y_target).item()
 
     print(f"  MSE={mse:.6f}  MAE={mae:.6f}")
     return OOSResult(label=label, mse=mse, mae=mae, smooth=smooth)
@@ -65,6 +67,7 @@ def compute_importance_matrix(
     fin_cols: list[str],
     macro_cols: list[str],
     label: str,
+    Y_fin: torch.Tensor | None = None,
     seed: int = 42,
     device: torch.device = DEVICE,
 ) -> pd.DataFrame:
@@ -76,14 +79,16 @@ def compute_importance_matrix(
     model.eval().to(device)
     x_f = X_fin.to(device)
     x_m = X_macro.to(device)
+    y_t = (Y_fin if Y_fin is not None else X_fin).to(device)
     N = x_f.shape[0]
+    out_cols = list(y_t.shape[-1:])  # F (output features)
     all_inputs = fin_cols + macro_cols
 
     with torch.no_grad():
         _, x_hat = model(x_f, x_m)
-        base_loss = ((x_hat - x_f) ** 2).mean(dim=1)
+        base_loss = ((x_hat - y_t) ** 2).mean(dim=1)
 
-    imp = np.zeros((len(fin_cols), len(all_inputs)))
+    imp = np.zeros((y_t.shape[-1], len(all_inputs)))
 
     for j, feat in enumerate(all_inputs):
         gen = torch.Generator().manual_seed(seed + j)
@@ -101,7 +106,7 @@ def compute_importance_matrix(
 
         with torch.no_grad():
             _, x_hat_p = model(xf_p, xm_p)
-            perm_loss = ((x_hat_p - x_f) ** 2).mean(dim=1)
+            perm_loss = ((x_hat_p - y_t) ** 2).mean(dim=1)
 
         imp[:, j] = (perm_loss - base_loss).mean(dim=0).cpu().numpy()
 
