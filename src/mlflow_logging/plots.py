@@ -310,9 +310,15 @@ def log_macro_exposure_density(
         mlflow.log_metric(f"{metric}_{label}_std",  std_v)
         mlflow.log_metric(f"{metric}_{label}_cv",   std_v / (mean_v + 1e-9))
 
+    def _plot_series(arr, label):
+        if np.std(arr) < 1e-10:
+            plt.axvline(np.mean(arr), label=f"{label} (constant={np.mean(arr):.4f})", linewidth=2)
+        else:
+            pd.Series(arr).plot.kde(label=label, linewidth=2)
+
     plt.figure(figsize=(7, 4))
-    pd.Series(exposure_blind).plot.kde(label="Blind", linewidth=2)
-    pd.Series(exposure_contextual).plot.kde(label="Contextual", linewidth=2)
+    _plot_series(exposure_blind,      "Blind")
+    _plot_series(exposure_contextual, "Contextual")
     plt.title(f"Macro Exposure Density – {metric.upper()}")
     plt.xlabel("Exposure"); plt.ylabel("Density")
     plt.legend(); plt.tight_layout()
