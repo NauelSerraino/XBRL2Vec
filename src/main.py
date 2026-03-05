@@ -1,7 +1,8 @@
 """
-XBRL2Vec – Contextual vs Blind Autoencoder Experiment
-======================================================
+XBRL2Vec – Forecasting Autoencoder Experiment
+==============================================
 MLflow experiment loop over multiple latent dimensions.
+Objective: predict next quarter's financials from T-1 past quarters + macro.
 """
 from __future__ import annotations
 
@@ -13,7 +14,8 @@ from pathlib import Path
 import mlflow
 import torch
 
-from models.autoencoder_dlinear_conditioner import CompanyEmbeddingAE
+from models.autoencoder_dlinear_forecaster import ForecastingAE
+from models.autoencoder_dlinear_blind import FinancialOnlyAE
 from services.config import DEVICE, SEQ_LEN
 from services.data import (
     AlignedDataset,
@@ -52,6 +54,9 @@ from mlflow_logging import (
     log_zero_sparsity,
 )
 from services.data import SaliencyMode
+
+T_IN  = SEQ_LEN - 1  # 47 quarters used as input
+T_OUT = 1             # predict the next (last) quarter
 
 
 # ---------------------------------------------------------------------------
@@ -102,38 +107,49 @@ def run_experiment(
     print(f"[INFO] Run: {run_name}  |  latent_factor leads to dim={latent_dim}")
     print(f"{'='*60}")
 
+    # ---- Slice: input = first T_IN quarters, target = last quarter ----
+    X_fin_in   = train_ds.X_fin[:, :T_IN, :]    # [N, T_IN, F]
+    X_mac_in   = train_ds.X_macro[:, :T_IN, :]  # [N, T_IN, M]
+    Y_fin      = train_ds.X_fin[:, T_IN:, :]    # [N, 1, F]
+
+    X_fin_in_t = test_ds.X_fin[:, :T_IN, :]
+    X_mac_in_t = test_ds.X_macro[:, :T_IN, :]
+    Y_fin_t    = test_ds.X_fin[:, T_IN:, :]
+
     with mlflow.start_run(run_name=run_name):
         logger = ArtifactLogger(run_name)
         mlflow.log_params(config.model_dump())
         mlflow.log_param("latent_dim", latent_dim)
+        mlflow.log_param("T_in", T_IN)
+        mlflow.log_param("T_out", T_OUT)
 
         # ----------------------------------------------------------------
-        # 1. Distribution diagnostics (data-level, run once per experiment)
+        # 1. Distribution diagnostics
         # ----------------------------------------------------------------
-        log_correlation_matrix(train_ds.X_fin, train_ds.X_macro, train_ds.fin_cols, train_ds.macro_cols, logger)
-        log_financial_boxplots(train_ds.X_fin, train_ds.fin_cols, logger)
-        log_macro_boxplots(train_ds.X_macro, train_ds.macro_cols, logger)
-        log_zero_sparsity(train_ds.X_fin, train_ds.X_macro, train_ds.fin_cols, train_ds.macro_cols, logger)
+        log_correlation_matrix(X_fin_in, X_mac_in, train_ds.fin_cols, train_ds.macro_cols, logger)
+        log_financial_boxplots(X_fin_in, train_ds.fin_cols, logger)
+        log_macro_boxplots(X_mac_in, train_ds.macro_cols, logger)
+        log_zero_sparsity(X_fin_in, X_mac_in, train_ds.fin_cols, train_ds.macro_cols, logger)
 
         # ----------------------------------------------------------------
-        # 2. Train contextual model
+        # 2. Train contextual model (FiLM-conditioned forecaster)
         # ----------------------------------------------------------------
         print("[INFO] Training contextual model")
-        model_ctx = CompanyEmbeddingAE(SEQ_LEN, train_ds.fin_dim, train_ds.macro_dim, latent_dim)
+        model_ctx = ForecastingAE(T_IN, T_OUT, train_ds.fin_dim, train_ds.macro_dim, latent_dim)
         trainer_ctx = MaskedAETrainer(config, ModelType.CONTEXTUAL)
         model_ctx, metrics_ctx = trainer_ctx.train(
-            model_ctx, train_ds.X_fin, train_ds.X_macro,
+            model_ctx, X_fin_in, X_mac_in, Y_fin=Y_fin,
             alpha=0.0, repeats=10, device=DEVICE,
         )
 
         # ----------------------------------------------------------------
-        # 3. Train blind model (zeroed macro)
+        # 3. Train blind model (financial-only forecaster)
         # ----------------------------------------------------------------
         print("[INFO] Training blind model")
-        model_blind = CompanyEmbeddingAE(SEQ_LEN, train_ds.fin_dim, train_ds.macro_dim, latent_dim)
+        model_blind = FinancialOnlyAE(T_IN, T_OUT, train_ds.fin_dim, latent_dim)
         trainer_blind = MaskedAETrainer(config, ModelType.BLIND)
         model_blind, metrics_blind = trainer_blind.train(
-            model_blind, train_ds.X_fin, torch.zeros_like(train_ds.X_macro),
+            model_blind, X_fin_in, X_mac_in, Y_fin=Y_fin,
             alpha=0.0, repeats=10, device=DEVICE,
         )
 
@@ -146,15 +162,15 @@ def run_experiment(
         log_loss_comparison(metrics_ctx, metrics_blind, logger)
 
         # ----------------------------------------------------------------
-        # 5. Importance matrices
+        # 5. Importance matrices (fin input features → forecast target)
         # ----------------------------------------------------------------
         imp_ctx = compute_importance_matrix(
-            model_ctx, train_ds.X_fin, train_ds.X_macro,
-            train_ds.fin_cols, train_ds.macro_cols, "contextual",
+            model_ctx, X_fin_in, X_mac_in,
+            train_ds.fin_cols, train_ds.macro_cols, "contextual", Y_fin=Y_fin,
         )
         imp_blind = compute_importance_matrix(
-            model_blind, train_ds.X_fin, torch.zeros_like(train_ds.X_macro),
-            train_ds.fin_cols, train_ds.macro_cols, "blind",
+            model_blind, X_fin_in, X_mac_in,
+            train_ds.fin_cols, train_ds.macro_cols, "blind", Y_fin=Y_fin,
         )
         log_importance_matrix(imp_ctx,   "contextual", logger)
         log_importance_matrix(imp_blind, "blind",      logger)
@@ -163,19 +179,19 @@ def run_experiment(
         # ----------------------------------------------------------------
         # 6. Embedding geometry
         # ----------------------------------------------------------------
-        log_company_distance_scatter(model_ctx, train_ds.X_fin, train_ds.X_macro, logger)
-        log_macro_sensitivity_barplot(model_ctx, train_ds.X_fin, train_ds.X_macro, train_ds.macro_cols, logger)
+        log_company_distance_scatter(model_ctx, X_fin_in, X_mac_in, logger)
+        log_macro_sensitivity_barplot(model_ctx, X_fin_in, X_mac_in, train_ds.macro_cols, logger)
 
-        r2_df = compute_variance_analysis(model_ctx, train_ds.X_fin, train_ds.X_macro)
+        r2_df = compute_variance_analysis(model_ctx, X_fin_in, X_mac_in)
         log_variance_analysis_plot(r2_df, logger)
         mlflow.log_table(r2_df.reset_index(), "r2_metrics.json")
 
         # ----------------------------------------------------------------
         # 7. Tournament: contextual vs blind
         # ----------------------------------------------------------------
-        log_macro_embedding_tournament(model_ctx, model_blind, train_ds.X_fin, train_ds.X_macro, logger)
+        log_macro_embedding_tournament(model_ctx, model_blind, X_fin_in, X_mac_in, logger)
 
-        exposure = compute_macro_exposure(model_ctx, model_blind, train_ds.X_fin, train_ds.X_macro)
+        exposure = compute_macro_exposure(model_ctx, model_blind, X_fin_in, X_mac_in)
         log_macro_exposure_density(exposure.blind_cosine, exposure.contextual_cosine, "cosine", logger)
         log_macro_exposure_density(exposure.blind_l2,     exposure.contextual_l2,     "l2",     logger)
 
@@ -183,14 +199,14 @@ def run_experiment(
         # 8. Saliency (Integrated Gradients)
         # ----------------------------------------------------------------
         compute_full_saliency(
-            model_ctx, train_ds.X_fin, train_ds.X_macro,
+            model_ctx, X_fin_in, X_mac_in,
             train_ds.fin_cols, train_ds.macro_cols,
             train_ds.meta_df, metadata_sector_df, logger,
         )
 
         for mode in SaliencyMode:
             compute_saliency_per_company(
-                model_ctx, train_ds.X_fin, train_ds.X_macro,
+                model_ctx, X_fin_in, X_mac_in,
                 train_ds.fin_cols, train_ds.macro_cols,
                 train_ds.meta_df, metadata_sector_df,
                 mode, logger,
@@ -208,8 +224,8 @@ def run_experiment(
         # 10. OOS evaluation
         # ----------------------------------------------------------------
         print("[INFO] OOS evaluation")
-        oos_ctx   = evaluate_oos(model_ctx,   test_ds.X_fin, test_ds.X_macro,              "contextual")
-        oos_blind = evaluate_oos(model_blind, test_ds.X_fin, torch.zeros_like(test_ds.X_macro), "blind")
+        oos_ctx   = evaluate_oos(model_ctx,   X_fin_in_t, X_mac_in_t, "contextual", Y_fin=Y_fin_t)
+        oos_blind = evaluate_oos(model_blind, X_fin_in_t, X_mac_in_t, "blind",      Y_fin=Y_fin_t)
 
         mlflow.log_metrics({
             "oos_mse_contextual": oos_ctx.mse,
@@ -248,7 +264,7 @@ def main() -> None:
 
     # ---- MLflow setup ----
     mlflow.set_tracking_uri("http://localhost:5000")
-    mlflow.set_experiment("Macro_vs_Blind_Comparison")
+    mlflow.set_experiment("Forecaster_vs_Blind_Comparison")
 
     # ---- Experiment loop ----
     print("[INFO] Starting experiments")
