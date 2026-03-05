@@ -55,9 +55,8 @@ from mlflow_logging import (
 )
 from services.data import SaliencyMode
 
-T_IN  = 24  # input window length (4 years of quarters)
-T_OUT = 4   # forecast horizon  (1 year)
-# n_windows per company = SEQ_LEN - T_IN - T_OUT + 1 = 29
+T_IN  = 24  # input window length
+T_OUT = 4   # forecast horizon
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +115,7 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--epochs",         type=int,   default=20)
     parser.add_argument("--batch_size",     type=int,   default=32)
     parser.add_argument("--learning_rate",  type=float, default=1e-3)
-    parser.add_argument("--mask_prob",      type=float, default=0.2)
     parser.add_argument("--seed",           type=int,   default=42)
-    parser.add_argument("--use_mask",       type=int,   default=0)
     return TrainConfig.from_args(parser.parse_args())
 
 
@@ -173,8 +170,7 @@ def run_experiment(
         model_ctx = ForecastingAE(T_IN, T_OUT, train_ds.fin_dim, train_ds.macro_dim, latent_dim)
         trainer_ctx = MaskedAETrainer(config, ModelType.CONTEXTUAL)
         model_ctx, metrics_ctx = trainer_ctx.train(
-            model_ctx, X_fin_in, X_mac_in, Y_fin=Y_fin,
-            alpha=0.0, repeats=10, device=DEVICE,
+            model_ctx, X_fin_in, X_mac_in, Y_fin=Y_fin, device=DEVICE,
         )
 
         # ----------------------------------------------------------------
@@ -184,8 +180,7 @@ def run_experiment(
         model_blind = FinancialOnlyAE(T_IN, T_OUT, train_ds.fin_dim, latent_dim)
         trainer_blind = MaskedAETrainer(config, ModelType.BLIND)
         model_blind, metrics_blind = trainer_blind.train(
-            model_blind, X_fin_in, X_mac_in, Y_fin=Y_fin,
-            alpha=0.0, repeats=10, device=DEVICE,
+            model_blind, X_fin_in, X_mac_in, Y_fin=Y_fin, device=DEVICE,
         )
 
         mlflow.log_metric("final_mse_contextual",  metrics_ctx[-1].mse)
