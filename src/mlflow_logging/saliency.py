@@ -25,16 +25,24 @@ from services.data import SaliencyMode
 class _LatentWrapper(torch.nn.Module):
     """Wraps a model to expose a scalar output for IG attribution."""
 
-    def __init__(self, model: torch.nn.Module, mode: SaliencyMode):
+    def __init__(self, model: torch.nn.Module, mode: SaliencyMode, Y_fin: torch.Tensor | None = None):
         super().__init__()
         self.model = model
         self.mode  = mode
+        self.Y_fin = Y_fin  # forecast target; if None, uses X_fin (autoencoder case)
 
     def forward(self, X_fin: torch.Tensor, X_macro: torch.Tensor) -> torch.Tensor:
         z, x_hat = self.model(X_fin, X_macro)
         if self.mode == SaliencyMode.LATENT:
             return torch.norm(z, dim=1)
-        return ((x_hat - X_fin) ** 2).mean(dim=(1, 2))
+        if self.Y_fin is not None:
+            # Captum expands the batch to [N * n_steps, ...]; tile Y_fin to match.
+            n_orig = self.Y_fin.shape[0]
+            repeats = x_hat.shape[0] // n_orig
+            target = self.Y_fin.repeat(repeats, 1, 1)
+        else:
+            target = X_fin
+        return ((x_hat - target) ** 2).mean(dim=(1, 2))
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +129,7 @@ def compute_full_saliency(
     logger: ArtifactLogger,
     device: torch.device = DEVICE,
     top_n: int = 30,
+    Y_fin: torch.Tensor | None = None,
 ) -> dict[str, dict]:
     """
     Run Integrated Gradients for both SaliencyMode values.
@@ -132,13 +141,14 @@ def compute_full_saliency(
 
     xf = X_fin.to(device)
     xm = X_macro.to(device)
+    yf = Y_fin.to(device) if Y_fin is not None else None
     baseline_fin   = torch.zeros_like(xf)
     baseline_macro = torch.zeros_like(xm)
 
     results = {}
 
     for mode in SaliencyMode:
-        wrapper = _LatentWrapper(model, mode)
+        wrapper = _LatentWrapper(model, mode, Y_fin=yf)
         ig = IntegratedGradients(wrapper)
 
         attr_fin, attr_macro = ig.attribute(

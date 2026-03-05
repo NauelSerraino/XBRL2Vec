@@ -16,7 +16,7 @@ import torch
 
 from models.autoencoder_dlinear_forecaster import ForecastingAE
 from models.autoencoder_dlinear_blind import FinancialOnlyAE
-from services.config import DEVICE, SEQ_LEN
+from services.config import DEVICE
 from services.data import (
     AlignedDataset,
     ColumnFilter,
@@ -55,8 +55,39 @@ from mlflow_logging import (
 )
 from services.data import SaliencyMode
 
-T_IN  = SEQ_LEN - 1  # 47 quarters used as input
-T_OUT = 1             # predict the next (last) quarter
+T_IN  = 24  # input window length (4 years of quarters)
+T_OUT = 4   # forecast horizon  (1 year)
+# n_windows per company = SEQ_LEN - T_IN - T_OUT + 1 = 29
+
+
+# ---------------------------------------------------------------------------
+# Sliding window
+# ---------------------------------------------------------------------------
+
+def create_sliding_windows(
+    X_fin: torch.Tensor,    # [N, T_total, F]
+    X_macro: torch.Tensor,  # [N, T_total, M]
+    T_in: int,
+    T_out: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return (X_win, X_mac_win, Y_win) with leading dim N * n_windows."""
+    T_total = X_fin.shape[1]
+    n_windows = T_total - T_in - T_out + 1
+    if n_windows < 1:
+        raise ValueError(
+            f"Not enough time steps for sliding window: "
+            f"T_total={T_total}, T_in={T_in}, T_out={T_out}"
+        )
+    X_wins, X_mac_wins, Y_wins = [], [], []
+    for w in range(n_windows):
+        X_wins.append(X_fin[:, w : w + T_in, :])
+        X_mac_wins.append(X_macro[:, w : w + T_in, :])
+        Y_wins.append(X_fin[:, w + T_in : w + T_in + T_out, :])
+    return (
+        torch.cat(X_wins,     dim=0),  # [N * n_windows, T_in,  F]
+        torch.cat(X_mac_wins, dim=0),  # [N * n_windows, T_in,  M]
+        torch.cat(Y_wins,     dim=0),  # [N * n_windows, T_out, F]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -107,14 +138,18 @@ def run_experiment(
     print(f"[INFO] Run: {run_name}  |  latent_factor leads to dim={latent_dim}")
     print(f"{'='*60}")
 
-    # ---- Slice: input = first T_IN quarters, target = last quarter ----
-    X_fin_in   = train_ds.X_fin[:, :T_IN, :]    # [N, T_IN, F]
-    X_mac_in   = train_ds.X_macro[:, :T_IN, :]  # [N, T_IN, M]
-    Y_fin      = train_ds.X_fin[:, T_IN:, :]    # [N, 1, F]
+    # ---- All sliding windows (training + OOS eval) ----
+    X_fin_in, X_mac_in, Y_fin = create_sliding_windows(
+        train_ds.X_fin, train_ds.X_macro, T_IN, T_OUT
+    )
+    X_fin_in_t, X_mac_in_t, Y_fin_t = create_sliding_windows(
+        test_ds.X_fin, test_ds.X_macro, T_IN, T_OUT
+    )
 
-    X_fin_in_t = test_ds.X_fin[:, :T_IN, :]
-    X_mac_in_t = test_ds.X_macro[:, :T_IN, :]
-    Y_fin_t    = test_ds.X_fin[:, T_IN:, :]
+    # ---- Last window per company (diagnostics / geometry / saliency) ----
+    X_fin_last  = train_ds.X_fin[:,   -(T_IN + T_OUT):-T_OUT, :]   # [N, T_IN,  F]
+    X_mac_last  = train_ds.X_macro[:, -(T_IN + T_OUT):-T_OUT, :]   # [N, T_IN,  M]
+    Y_fin_last  = train_ds.X_fin[:,   -T_OUT:,                :]   # [N, T_OUT, F]
 
     with mlflow.start_run(run_name=run_name):
         logger = ArtifactLogger(run_name)
@@ -124,12 +159,12 @@ def run_experiment(
         mlflow.log_param("T_out", T_OUT)
 
         # ----------------------------------------------------------------
-        # 1. Distribution diagnostics
+        # 1. Distribution diagnostics  (last window, one row per company)
         # ----------------------------------------------------------------
-        log_correlation_matrix(X_fin_in, X_mac_in, train_ds.fin_cols, train_ds.macro_cols, logger)
-        log_financial_boxplots(X_fin_in, train_ds.fin_cols, logger)
-        log_macro_boxplots(X_mac_in, train_ds.macro_cols, logger)
-        log_zero_sparsity(X_fin_in, X_mac_in, train_ds.fin_cols, train_ds.macro_cols, logger)
+        log_correlation_matrix(X_fin_last, X_mac_last, train_ds.fin_cols, train_ds.macro_cols, logger)
+        log_financial_boxplots(X_fin_last, train_ds.fin_cols, logger)
+        log_macro_boxplots(X_mac_last, train_ds.macro_cols, logger)
+        log_zero_sparsity(X_fin_last, X_mac_last, train_ds.fin_cols, train_ds.macro_cols, logger)
 
         # ----------------------------------------------------------------
         # 2. Train contextual model (FiLM-conditioned forecaster)
@@ -162,51 +197,52 @@ def run_experiment(
         log_loss_comparison(metrics_ctx, metrics_blind, logger)
 
         # ----------------------------------------------------------------
-        # 5. Importance matrices (fin input features → forecast target)
+        # 5. Importance matrices  (last window, one row per company)
         # ----------------------------------------------------------------
         imp_ctx = compute_importance_matrix(
-            model_ctx, X_fin_in, X_mac_in,
-            train_ds.fin_cols, train_ds.macro_cols, "contextual", Y_fin=Y_fin,
+            model_ctx, X_fin_last, X_mac_last,
+            train_ds.fin_cols, train_ds.macro_cols, "contextual", Y_fin=Y_fin_last,
         )
         imp_blind = compute_importance_matrix(
-            model_blind, X_fin_in, X_mac_in,
-            train_ds.fin_cols, train_ds.macro_cols, "blind", Y_fin=Y_fin,
+            model_blind, X_fin_last, X_mac_last,
+            train_ds.fin_cols, train_ds.macro_cols, "blind", Y_fin=Y_fin_last,
         )
         log_importance_matrix(imp_ctx,   "contextual", logger)
         log_importance_matrix(imp_blind, "blind",      logger)
         log_importance_summary(imp_ctx, imp_blind, train_ds.fin_cols, train_ds.macro_cols, logger)
 
         # ----------------------------------------------------------------
-        # 6. Embedding geometry
+        # 6. Embedding geometry  (last window, one row per company)
         # ----------------------------------------------------------------
-        log_company_distance_scatter(model_ctx, X_fin_in, X_mac_in, logger)
-        log_macro_sensitivity_barplot(model_ctx, X_fin_in, X_mac_in, train_ds.macro_cols, logger)
+        log_company_distance_scatter(model_ctx, X_fin_last, X_mac_last, logger)
+        log_macro_sensitivity_barplot(model_ctx, X_fin_last, X_mac_last, train_ds.macro_cols, logger)
 
-        r2_df = compute_variance_analysis(model_ctx, X_fin_in, X_mac_in)
+        r2_df = compute_variance_analysis(model_ctx, X_fin_last, X_mac_last)
         log_variance_analysis_plot(r2_df, logger)
         mlflow.log_table(r2_df.reset_index(), "r2_metrics.json")
 
         # ----------------------------------------------------------------
-        # 7. Tournament: contextual vs blind
+        # 7. Tournament: contextual vs blind  (last window)
         # ----------------------------------------------------------------
-        log_macro_embedding_tournament(model_ctx, model_blind, X_fin_in, X_mac_in, logger)
+        log_macro_embedding_tournament(model_ctx, model_blind, X_fin_last, X_mac_last, logger)
 
-        exposure = compute_macro_exposure(model_ctx, model_blind, X_fin_in, X_mac_in)
+        exposure = compute_macro_exposure(model_ctx, model_blind, X_fin_last, X_mac_last)
         log_macro_exposure_density(exposure.blind_cosine, exposure.contextual_cosine, "cosine", logger)
         log_macro_exposure_density(exposure.blind_l2,     exposure.contextual_l2,     "l2",     logger)
 
         # ----------------------------------------------------------------
-        # 8. Saliency (Integrated Gradients)
+        # 8. Saliency (Integrated Gradients)  (last window, one row per company)
         # ----------------------------------------------------------------
         compute_full_saliency(
-            model_ctx, X_fin_in, X_mac_in,
+            model_ctx, X_fin_last, X_mac_last,
             train_ds.fin_cols, train_ds.macro_cols,
             train_ds.meta_df, metadata_sector_df, logger,
+            Y_fin=Y_fin_last,
         )
 
         for mode in SaliencyMode:
             compute_saliency_per_company(
-                model_ctx, X_fin_in, X_mac_in,
+                model_ctx, X_fin_last, X_mac_last,
                 train_ds.fin_cols, train_ds.macro_cols,
                 train_ds.meta_df, metadata_sector_df,
                 mode, logger,
