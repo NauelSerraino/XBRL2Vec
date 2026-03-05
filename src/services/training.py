@@ -51,19 +51,14 @@ class MaskedAETrainer:
         X_macro: torch.Tensor,
         *,
         Y_fin: torch.Tensor | None = None,
-        alpha: float = 0.0,
-        repeats: int = 10,
         device: torch.device = DEVICE,
     ) -> tuple[torch.nn.Module, list[EpochMetrics]]:
         """
         Train the model and return (trained_model, per-epoch metrics).
 
         Args:
-            Y_fin:   Forecast target tensor [N, T_out, F].
-                     If None, X_fin is used as the target (reconstruction mode).
-            alpha:   Weight for masked vs full reconstruction loss.
-                     0 = standard AE (no masking penalty).
-            repeats: Number of augmented forward passes per batch.
+            Y_fin: Forecast target tensor [N, T_out, F].
+                   If None, X_fin is used as the target (reconstruction mode).
         """
         Y_target = Y_fin if Y_fin is not None else X_fin
 
@@ -92,39 +87,19 @@ class MaskedAETrainer:
                 x_mac_b = x_mac_b.to(device)
                 y_fin_b = y_fin_b.to(device)
 
-                for r in range(repeats):
-                    optimizer.zero_grad()
+                optimizer.zero_grad()
+                _, x_hat = model(x_fin_b, x_mac_b)
+                loss = F.mse_loss(x_hat, y_fin_b)
+                loss.backward()
+                optimizer.step()
 
-                    if self.config.use_mask and self.config.mask_prob > 0:
-                        mask_gen = torch.Generator(device="cpu").manual_seed(
-                            self.config.seed + r + n
-                        )
-                        mask = (
-                            torch.rand(x_fin_b.shape, generator=mask_gen).to(device)
-                            < self.config.mask_prob
-                        )
-                        x_fin_input = x_fin_b.clone()
-                        x_fin_input[mask] = 0.0
+                bs_eff = x_fin_b.size(0)
+                n += bs_eff
+                total_mse += loss.item() * bs_eff
 
-                        _, x_hat = model(x_fin_input, x_mac_b)
-                        loss = (
-                            alpha * F.mse_loss(x_hat, y_fin_b)
-                            + (1 - alpha) * F.mse_loss(x_hat, y_fin_b)
-                        )
-                    else:
-                        _, x_hat = model(x_fin_b, x_mac_b)
-                        loss = F.mse_loss(x_hat, y_fin_b)
-
-                    loss.backward()
-                    optimizer.step()
-
-                    bs_eff = x_fin_b.size(0)
-                    n += bs_eff
-                    total_mse += loss.item() * bs_eff
-
-                    with torch.no_grad():
-                        total_mae    += F.l1_loss(x_hat, y_fin_b).item() * bs_eff
-                        total_smooth += F.smooth_l1_loss(x_hat, y_fin_b).item() * bs_eff
+                with torch.no_grad():
+                    total_mae    += F.l1_loss(x_hat, y_fin_b).item() * bs_eff
+                    total_smooth += F.smooth_l1_loss(x_hat, y_fin_b).item() * bs_eff
 
             metrics = EpochMetrics(
                 epoch  = epoch,

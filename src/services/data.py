@@ -47,9 +47,7 @@ class TrainConfig(BaseModel):
     epochs: int = 20
     batch_size: int = 32
     learning_rate: float = 1e-3
-    mask_prob: float = 0.2
     seed: int = 42
-    use_mask: bool = False
 
     @classmethod
     def from_args(cls, args) -> "TrainConfig":
@@ -58,9 +56,7 @@ class TrainConfig(BaseModel):
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
-            mask_prob=args.mask_prob,
             seed=args.seed,
-            use_mask=bool(args.use_mask),
         )
 
 
