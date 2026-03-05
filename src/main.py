@@ -55,9 +55,6 @@ from mlflow_logging import (
 )
 from services.data import SaliencyMode
 
-T_IN  = 24  # input window length
-T_OUT = 4   # forecast horizon
-
 
 # ---------------------------------------------------------------------------
 # Sliding window
@@ -116,6 +113,8 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--batch_size",     type=int,   default=32)
     parser.add_argument("--learning_rate",  type=float, default=1e-3)
     parser.add_argument("--seed",           type=int,   default=42)
+    parser.add_argument("--t_in",           type=int,   default=20)
+    parser.add_argument("--t_out",          type=int,   default=4)
     return TrainConfig.from_args(parser.parse_args())
 
 
@@ -135,25 +134,25 @@ def run_experiment(
     print(f"[INFO] Run: {run_name}  |  latent_factor leads to dim={latent_dim}")
     print(f"{'='*60}")
 
+    t_in, t_out = config.t_in, config.t_out
+
     # ---- All sliding windows (training + OOS eval) ----
     X_fin_in, X_mac_in, Y_fin = create_sliding_windows(
-        train_ds.X_fin, train_ds.X_macro, T_IN, T_OUT
+        train_ds.X_fin, train_ds.X_macro, t_in, t_out
     )
     X_fin_in_t, X_mac_in_t, Y_fin_t = create_sliding_windows(
-        test_ds.X_fin, test_ds.X_macro, T_IN, T_OUT
+        test_ds.X_fin, test_ds.X_macro, t_in, t_out
     )
 
     # ---- Last window per company (diagnostics / geometry / saliency) ----
-    X_fin_last  = train_ds.X_fin[:,   -(T_IN + T_OUT):-T_OUT, :]   # [N, T_IN,  F]
-    X_mac_last  = train_ds.X_macro[:, -(T_IN + T_OUT):-T_OUT, :]   # [N, T_IN,  M]
-    Y_fin_last  = train_ds.X_fin[:,   -T_OUT:,                :]   # [N, T_OUT, F]
+    X_fin_last  = train_ds.X_fin[:,   -(t_in + t_out):-t_out, :]   # [N, t_in,  F]
+    X_mac_last  = train_ds.X_macro[:, -(t_in + t_out):-t_out, :]   # [N, t_in,  M]
+    Y_fin_last  = train_ds.X_fin[:,   -t_out:,                :]   # [N, t_out, F]
 
     with mlflow.start_run(run_name=run_name):
         logger = ArtifactLogger(run_name)
         mlflow.log_params(config.model_dump())
         mlflow.log_param("latent_dim", latent_dim)
-        mlflow.log_param("T_in", T_IN)
-        mlflow.log_param("T_out", T_OUT)
 
         # ----------------------------------------------------------------
         # 1. Distribution diagnostics  (last window, one row per company)
@@ -167,7 +166,7 @@ def run_experiment(
         # 2. Train contextual model (FiLM-conditioned forecaster)
         # ----------------------------------------------------------------
         print("[INFO] Training contextual model")
-        model_ctx = ForecastingAE(T_IN, T_OUT, train_ds.fin_dim, train_ds.macro_dim, latent_dim)
+        model_ctx = ForecastingAE(t_in, t_out, train_ds.fin_dim, train_ds.macro_dim, latent_dim)
         trainer_ctx = MaskedAETrainer(config, ModelType.CONTEXTUAL)
         model_ctx, metrics_ctx = trainer_ctx.train(
             model_ctx, X_fin_in, X_mac_in, Y_fin=Y_fin, device=DEVICE,
@@ -177,10 +176,10 @@ def run_experiment(
         # 3. Train blind model (financial-only forecaster)
         # ----------------------------------------------------------------
         print("[INFO] Training blind model")
-        model_blind = FinancialOnlyAE(T_IN, T_OUT, train_ds.fin_dim, latent_dim)
+        model_blind = FinancialOnlyAE(t_in, t_out, train_ds.fin_dim, latent_dim)
         trainer_blind = MaskedAETrainer(config, ModelType.BLIND)
         model_blind, metrics_blind = trainer_blind.train(
-            model_blind, X_fin_in, X_mac_in, Y_fin=Y_fin, device=DEVICE,
+            model_blind, X_fin_in, Y_fin=Y_fin, device=DEVICE,
         )
 
         mlflow.log_metric("final_mse_contextual",  metrics_ctx[-1].mse)

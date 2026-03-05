@@ -48,7 +48,7 @@ class MaskedAETrainer:
         self,
         model: torch.nn.Module,
         X_fin: torch.Tensor,
-        X_macro: torch.Tensor,
+        X_macro: torch.Tensor | None = None,
         *,
         Y_fin: torch.Tensor | None = None,
         device: torch.device = DEVICE,
@@ -57,8 +57,9 @@ class MaskedAETrainer:
         Train the model and return (trained_model, per-epoch metrics).
 
         Args:
-            Y_fin: Forecast target tensor [N, T_out, F].
-                   If None, X_fin is used as the target (reconstruction mode).
+            X_macro: Macro tensor. Pass None for macro-blind models.
+            Y_fin:   Forecast target tensor [N, T_out, F].
+                     If None, X_fin is used as the target (reconstruction mode).
         """
         Y_target = Y_fin if Y_fin is not None else X_fin
 
@@ -67,8 +68,13 @@ class MaskedAETrainer:
         optimizer = torch.optim.Adam(model.parameters(), lr=self.config.learning_rate)
 
         g = torch.Generator(device="cpu").manual_seed(self.config.seed)
+        dataset = (
+            TensorDataset(X_fin, Y_target)
+            if X_macro is None
+            else TensorDataset(X_fin, X_macro, Y_target)
+        )
         loader = DataLoader(
-            TensorDataset(X_fin, X_macro, Y_target),
+            dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
             generator=g,
@@ -82,13 +88,19 @@ class MaskedAETrainer:
             total_mse = total_mae = total_smooth = 0.0
             n = 0
 
-            for x_fin_b, x_mac_b, y_fin_b in loader:
-                x_fin_b = x_fin_b.to(device)
-                x_mac_b = x_mac_b.to(device)
-                y_fin_b = y_fin_b.to(device)
+            for batch in loader:
+                if X_macro is None:
+                    x_fin_b, y_fin_b = batch
+                    x_fin_b = x_fin_b.to(device)
+                    y_fin_b = y_fin_b.to(device)
+                else:
+                    x_fin_b, x_mac_b, y_fin_b = batch
+                    x_fin_b = x_fin_b.to(device)
+                    x_mac_b = x_mac_b.to(device)
+                    y_fin_b = y_fin_b.to(device)
 
                 optimizer.zero_grad()
-                _, x_hat = model(x_fin_b, x_mac_b)
+                _, x_hat = model(x_fin_b) if X_macro is None else model(x_fin_b, x_mac_b)
                 loss = F.mse_loss(x_hat, y_fin_b)
                 loss.backward()
                 optimizer.step()
