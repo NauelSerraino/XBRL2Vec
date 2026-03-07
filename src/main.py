@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 import mlflow
+import pandas as pd
 import torch
 
 from models.autoencoder_dlinear_forecaster import ForecastingAE
@@ -28,6 +29,7 @@ from services.data import (
     load_test_data,
 )
 from services.evaluation import (
+    compute_forecast_timeseries,
     compute_importance_matrix,
     compute_macro_exposure,
     compute_variance_analysis,
@@ -43,6 +45,7 @@ from mlflow_logging import (
     log_company_distance_scatter,
     log_correlation_matrix,
     log_financial_boxplots,
+    log_forecast_aggregate_plot,
     log_importance_matrix,
     log_importance_summary,
     log_loss_comparison,
@@ -106,7 +109,7 @@ def seed_everything(seed: int) -> None:
 # CLI
 # ---------------------------------------------------------------------------
 
-def parse_args() -> TrainConfig:
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--latent_factors", nargs="+", type=float, default=[0.5, 0.8, 1, 2])
     parser.add_argument("--epochs",         type=int,   default=20)
@@ -115,7 +118,13 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--seed",           type=int,   default=42)
     parser.add_argument("--t_in",           type=int,   default=20)
     parser.add_argument("--t_out",          type=int,   default=4)
-    return TrainConfig.from_args(parser.parse_args())
+    parser.add_argument(
+        "--norm_mode",
+        choices=["global", "per_ticker"],
+        default="per_ticker",
+        help="Must match the norm_mode used when running preprocess.py.",
+    )
+    return parser.parse_args()
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +138,11 @@ def run_experiment(
     metadata_sector_df,
     latent_dim: int,
 ) -> None:
-    run_name = f"latent_dim-{latent_dim}"
+    t_in, t_out = config.t_in, config.t_out
+    run_name = f"tin{t_in}-tout{t_out}-latent{latent_dim}"
     print(f"\n{'='*60}")
     print(f"[INFO] Run: {run_name}  |  latent_factor leads to dim={latent_dim}")
     print(f"{'='*60}")
-
-    t_in, t_out = config.t_in, config.t_out
 
     # ---- All sliding windows (training + OOS eval) ----
     X_fin_in, X_mac_in, Y_fin = create_sliding_windows(
@@ -153,6 +161,7 @@ def run_experiment(
         logger = ArtifactLogger(run_name)
         mlflow.log_params(config.model_dump())
         mlflow.log_param("latent_dim", latent_dim)
+        mlflow.log_param("norm_mode", config.norm_mode)
 
         # ----------------------------------------------------------------
         # 1. Distribution diagnostics  (last window, one row per company)
@@ -266,20 +275,60 @@ def run_experiment(
         })
         print(f"[INFO] OOS Macro Gain: {oos_blind.mse - oos_ctx.mse:.6f}")
 
+        # ----------------------------------------------------------------
+        # 11. Metrics summary table (in-sample vs OOS, overfitting check)
+        # ----------------------------------------------------------------
+        rows = []
+        for label, insample, oos in [
+            ("contextual", metrics_ctx[-1],   oos_ctx),
+            ("blind",      metrics_blind[-1], oos_blind),
+        ]:
+            rows.append({"model": label, "split": "in_sample",
+                         "mse": insample.mse, "mae": insample.mae, "smooth_l1": insample.smooth})
+            rows.append({"model": label, "split": "oos",
+                         "mse": oos.mse,      "mae": oos.mae,      "smooth_l1": oos.smooth})
+            rows.append({"model": label, "split": "oos_minus_insample",
+                         "mse": oos.mse - insample.mse,
+                         "mae": oos.mae - insample.mae,
+                         "smooth_l1": oos.smooth - insample.smooth})
+        metrics_df = pd.DataFrame(rows)
+        mlflow.log_table(metrics_df, "metrics_summary.json")
+
+        # ----------------------------------------------------------------
+        # 12. Forecast aggregate timeseries (cross-sectional mean ± std)
+        # ----------------------------------------------------------------
+        print("[INFO] Forecast aggregate timeseries")
+        for ds, split in [(train_ds, "in_sample"), (test_ds, "oos")]:
+            ts_df = compute_forecast_timeseries(
+                model_ctx,
+                ds.X_fin, ds.X_macro, ds.meta_df, ds.fin_cols,
+                T_in=t_in, T_out=t_out,
+            )
+            log_forecast_aggregate_plot(
+                ts_df, logger,
+                cutoff_quarter="2019Q4",
+                split_label=split,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    config = parse_args()
+    args = parse_args()
+    config = TrainConfig.from_args(args)
     seed_everything(config.seed)
 
-    IN_DIR = Path("/home/nauel/vscode/XBRL2Vec/data/in")
+    BASE_DIR       = Path("/home/nauel/vscode/XBRL2Vec/data")
+    META_DIR       = BASE_DIR / "in"
+    PREPROCESS_DIR = BASE_DIR / "out" / "preprocess"
 
     # ---- Load & transform train data ----
     print("[INFO] Loading train data")
-    bs_df, is_df, cf_df, macro_df, metadata_sector_df = load_raw_data(IN_DIR)
+    bs_df, is_df, cf_df, macro_df, metadata_sector_df = load_raw_data(
+        PREPROCESS_DIR, META_DIR, norm_mode=config.norm_mode
+    )
     bs_df, is_df, cf_df, macro_df = filter_columns(bs_df, is_df, cf_df, macro_df)
 
     print("[INFO] Building aligned dataset")
@@ -288,7 +337,7 @@ def main() -> None:
 
     # ---- Load & transform test data ----
     print("[INFO] Loading test data")
-    bs_test, is_test, cf_test = load_test_data(IN_DIR, macro_df)
+    bs_test, is_test, cf_test = load_test_data(PREPROCESS_DIR, macro_df, norm_mode=config.norm_mode)
     raw_test_ds = create_aligned_dataset(bs_test, is_test, cf_test, macro_df)
     test_ds     = transform_dataset(raw_test_ds)
 

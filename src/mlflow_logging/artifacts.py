@@ -24,6 +24,7 @@ import mlflow
 class ArtifactGroup(str, Enum):
     DISTRIBUTION = "DISTRIBUTION"
     EMBEDDING    = "EMBEDDING"
+    FORECAST     = "FORECAST"
     IMPORTANCE   = "IMPORTANCE"
     SALIENCY     = "SALIENCY"
     TOURNAMENT   = "TOURNAMENT"
