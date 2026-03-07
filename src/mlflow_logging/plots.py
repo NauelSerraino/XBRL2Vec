@@ -4,6 +4,8 @@ Each function: builds figure → saves via ArtifactLogger → logs to MLflow.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import torch
@@ -18,6 +20,25 @@ import mlflow
 
 from mlflow_logging.artifacts import ArtifactGroup, ArtifactLogger
 from services.config import DEVICE
+
+
+# Key variables shown by default in the aggregate forecast plot.
+# Strip the suffix before display; only variables present in fin_cols are used.
+_DEFAULT_KEY_VARS = [
+    "Total Revenue_DIFF_Y",
+    "Net Income_DIFF_Y",
+    "Gross Profit_DIFF_Y",
+    "Operating Income_DIFF_Y",
+    "Operating Cash Flow_DIFF_Y",
+    "Total Assets_DIFF_Y",
+    # DIFF_Q variants (used when model is trained on quarterly diffs)
+    "Total Revenue_DIFF_Q",
+    "Net Income_DIFF_Q",
+    "Gross Profit_DIFF_Q",
+    "Operating Income_DIFF_Q",
+    "Operating Cash Flow_DIFF_Q",
+    "Total Assets_DIFF_Q",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +436,107 @@ def log_variance_analysis_plot(
 ) -> None:
     """Save the R² variance analysis table as CSV (plot is optional)."""
     logger.log_table(r2_df.reset_index(), ArtifactGroup.EMBEDDING, "variance_r2_analysis")
+
+
+# ---------------------------------------------------------------------------
+# FORECAST plots
+# ---------------------------------------------------------------------------
+
+def log_forecast_aggregate_plot(
+    timeseries_df: pd.DataFrame,
+    logger: ArtifactLogger,
+    key_vars: list[str] | None = None,
+    cutoff_quarter: str = "2019Q4",
+    split_label: str = "",
+) -> None:
+    """
+    Aggregate (cross-sectional mean ± std) predicted vs actual for key variables.
+
+    Each quarter appears exactly once (walk-forward evaluation, one prediction
+    per company per quarter).  The full quarterly time series is shown, not
+    filtered by step_ahead.
+
+    Parameters
+    ----------
+    timeseries_df : output of ``compute_forecast_timeseries``
+    key_vars      : fin_col names to plot; defaults to the most economically
+                    meaningful ones present in the data.
+    cutoff_quarter: only quarters >= this string are shown (format 'YYYYQn').
+    split_label   : 'in_sample' or 'oos' – used in title and artifact name.
+    """
+    print(f"[INFO] Forecast aggregate plot ({split_label})")
+
+    available_vars = timeseries_df["feature"].unique()
+    if key_vars is None:
+        key_vars = [v for v in _DEFAULT_KEY_VARS if v in available_vars]
+    else:
+        key_vars = [v for v in key_vars if v in available_vars]
+
+    if not key_vars:
+        print("[WARN] No matching key variables found; skipping forecast plot.")
+        return
+
+    df = timeseries_df[timeseries_df["quarter"] >= cutoff_quarter].copy()
+
+    if df.empty:
+        print(f"[WARN] No data after cutoff {cutoff_quarter}; skipping forecast plot.")
+        return
+
+    sorted_quarters = sorted(df["quarter"].unique())
+
+    n_vars = len(key_vars)
+    n_cols = min(3, n_vars)
+    n_rows = math.ceil(n_vars / n_cols)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4 * n_rows), squeeze=False)
+
+    for idx, var in enumerate(key_vars):
+        ax = axes[idx // n_cols][idx % n_cols]
+        var_df = (
+            df[df["feature"] == var]
+            .set_index("quarter")
+            .reindex(sorted_quarters)
+        )
+        x = range(len(var_df))
+
+        # Actual (blue)
+        ax.plot(x, var_df["actual_mean"], label="Actual", color="#1f77b4", linewidth=1.8)
+        ax.fill_between(
+            x,
+            var_df["actual_mean"] - var_df["actual_std"].fillna(0),
+            var_df["actual_mean"] + var_df["actual_std"].fillna(0),
+            alpha=0.12, color="#1f77b4",
+        )
+        # Forecast (orange, dashed)
+        ax.plot(x, var_df["predicted_mean"], label="Forecast", color="#ff7f0e",
+                linewidth=1.8, linestyle="--")
+        ax.fill_between(
+            x,
+            var_df["predicted_mean"] - var_df["predicted_std"].fillna(0),
+            var_df["predicted_mean"] + var_df["predicted_std"].fillna(0),
+            alpha=0.12, color="#ff7f0e",
+        )
+
+        display_name = var.replace("_DIFF_Y", "").replace("_DIFF_Q", "")
+        ax.set_title(display_name, fontsize=10)
+        ax.legend(fontsize=7)
+        ax.grid(True, alpha=0.3, linestyle="--")
+        ax.axhline(0, color="gray", linewidth=0.5, linestyle=":")
+
+        tick_pos = list(range(0, len(sorted_quarters), 4))
+        ax.set_xticks(tick_pos)
+        ax.set_xticklabels([sorted_quarters[t] for t in tick_pos], rotation=45, fontsize=7)
+
+    for idx in range(n_vars, n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].set_visible(False)
+
+    lbl = f" ({split_label})" if split_label else ""
+    plt.suptitle(
+        f"Cross-sectional Forecast vs Actual{lbl} – {logger.run_name}",
+        fontsize=11,
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+    artifact_name = f"aggregate_timeseries_{split_label}" if split_label else "aggregate_timeseries"
+    logger.log_figure(fig, ArtifactGroup.FORECAST, artifact_name)
+    logger.log_table(df, ArtifactGroup.FORECAST, artifact_name)

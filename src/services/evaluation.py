@@ -18,6 +18,22 @@ from services.data import DistanceMetric
 
 
 # ---------------------------------------------------------------------------
+# Quarter arithmetic helpers
+# ---------------------------------------------------------------------------
+
+def _quarter_to_idx(q: str) -> int:
+    """Convert 'YYYYQn' to monotonic integer (e.g. 2020Q1 → 8080)."""
+    q = str(q)
+    year, qn = int(q[:4]), int(q[5])
+    return year * 4 + qn - 1
+
+
+def _idx_to_quarter(idx: int) -> str:
+    year, rem = divmod(idx, 4)
+    return f"{year}Q{rem + 1}"
+
+
+# ---------------------------------------------------------------------------
 # OOS evaluation
 # ---------------------------------------------------------------------------
 
@@ -208,3 +224,108 @@ def compute_variance_analysis(
     print(f"  Financial R² – Latent: {r2['latent']['financial_r2']:.4f}  |  Recon: {r2['reconstruction']['financial_r2']:.4f}")
 
     return df
+
+
+# ---------------------------------------------------------------------------
+# Forecast timeseries (aggregate predicted vs actual over calendar time)
+# ---------------------------------------------------------------------------
+
+def compute_forecast_timeseries(
+    model: torch.nn.Module,
+    X_fin: torch.Tensor,    # [N, seq_len, F]  – AlignedDataset.X_fin
+    X_macro: torch.Tensor,  # [N, seq_len, M]
+    meta_df: pd.DataFrame,  # [N] rows: ticker, end_quarter
+    fin_cols: list[str],
+    T_in: int,
+    T_out: int,
+    batch_size: int = 512,
+    device: torch.device = DEVICE,
+) -> pd.DataFrame:
+    """
+    Slides a T_in/T_out window across every position inside each AlignedDataset
+    row, producing n_wins = seq_len - T_in - T_out + 1 (company, window) pairs
+    per row.  This gives predictions across the full calendar span of the data,
+    not just the last T_out quarters.
+
+    Returns a DataFrame aggregated cross-sectionally by (quarter, step_ahead):
+        quarter, feature, step_ahead, actual_mean, actual_std,
+        predicted_mean, predicted_std, count
+    """
+    N, seq_len, F = X_fin.shape
+    M        = X_macro.shape[-1]
+    # Walk-forward: stride = T_out so each target quarter is predicted exactly once.
+    # Round w: input  [w*T_out : w*T_out + T_in]
+    #          target [w*T_out + T_in : (w+1)*T_out + T_in]
+    n_rounds = (seq_len - T_in) // T_out
+    assert n_rounds >= 1, f"seq_len={seq_len} too short for T_in={T_in}, T_out={T_out}"
+    total    = N * n_rounds
+    print(f"[INFO] Forecast timeseries: {N} rows × {n_rounds} rounds = {total} (company, round) pairs")
+
+    # Build all sub-windows: [N, n_rounds, T_in, F] → [N*n_rounds, T_in, F]
+    # Global index g = n * n_rounds + w  (company n, round w)
+    xin_all  = torch.stack(
+        [X_fin[:,   w*T_out : w*T_out + T_in,          :] for w in range(n_rounds)], dim=1
+    ).reshape(total, T_in, F)
+    xmac_all = torch.stack(
+        [X_macro[:, w*T_out : w*T_out + T_in,          :] for w in range(n_rounds)], dim=1
+    ).reshape(total, T_in, M)
+    yact_all = torch.stack(
+        [X_fin[:,   w*T_out + T_in : w*T_out + T_in + T_out, :] for w in range(n_rounds)], dim=1
+    ).reshape(total, T_out, F).numpy()
+
+    # Inference in batches
+    model.eval().to(device)
+    preds = []
+    for start in range(0, total, batch_size):
+        end = min(start + batch_size, total)
+        with torch.no_grad():
+            _, y_hat = model(xin_all[start:end].to(device), xmac_all[start:end].to(device))
+        preds.append(y_hat.cpu())
+    Y_pred = torch.cat(preds, dim=0).numpy()  # [total, T_out, F]
+
+    # Quarter labels
+    # Target position in full window for round w, step s: w*T_out + T_in + s
+    # Calendar quarter: eq_idxs[n] - (seq_len - 1) + (w*T_out + T_in + s)
+    eq_idxs      = np.array([_quarter_to_idx(str(q)) for q in meta_df["end_quarter"].values])
+    g_arr        = np.arange(total)
+    n_arr        = g_arr // n_rounds
+    w_arr        = g_arr % n_rounds
+    step_offsets = np.arange(T_out)
+
+    target_q_idxs = (
+        eq_idxs[n_arr, None]                   # [total, 1]
+        - (seq_len - 1)                        # offset to position-0 calendar quarter
+        + w_arr[:, None] * T_out + T_in        # round start + T_in = target block start
+        + step_offsets[None, :]                # step within target block
+    )                                          # [total, T_out]
+
+    quarter_labels = np.vectorize(_idx_to_quarter)(target_q_idxs)    # [total, T_out]
+    step_labels    = np.tile(step_offsets + 1, (total, 1))            # [total, T_out]
+
+    # Flatten: [total * T_out, ...]
+    quarters_flat = quarter_labels.reshape(-1)
+    steps_flat    = step_labels.reshape(-1)
+    Y_pred_flat   = Y_pred.reshape(-1, F)
+    Y_act_flat    = yact_all.reshape(-1, F)
+
+    # Aggregate cross-sectionally per (quarter, feature)
+    # step_ahead is kept for reference but the plot aggregates over all steps
+    parts = []
+    for f_idx, feat in enumerate(fin_cols):
+        tmp = pd.DataFrame({
+            "quarter":    quarters_flat,
+            "step_ahead": steps_flat,
+            "actual":     Y_act_flat[:, f_idx],
+            "predicted":  Y_pred_flat[:, f_idx],
+        })
+        agg = tmp.groupby("quarter", sort=False).agg(
+            actual_mean    = ("actual",    "mean"),
+            actual_std     = ("actual",    "std"),
+            predicted_mean = ("predicted", "mean"),
+            predicted_std  = ("predicted", "std"),
+            count          = ("actual",    "count"),
+        ).reset_index()
+        agg["feature"] = feat
+        parts.append(agg)
+
+    return pd.concat(parts, ignore_index=True)
