@@ -318,12 +318,19 @@ def compute_forecast_timeseries(
             "actual":     Y_act_flat[:, f_idx],
             "predicted":  Y_pred_flat[:, f_idx],
         })
+        def _half_iqr(x):
+            return (x.quantile(0.75) - x.quantile(0.25)) / 2
+
         agg = tmp.groupby("quarter", sort=False).agg(
-            actual_mean    = ("actual",    "mean"),
-            actual_std     = ("actual",    "std"),
-            predicted_mean = ("predicted", "mean"),
-            predicted_std  = ("predicted", "std"),
-            count          = ("actual",    "count"),
+            actual_mean      = ("actual",    "mean"),
+            actual_std       = ("actual",    "std"),
+            predicted_mean   = ("predicted", "mean"),
+            predicted_std    = ("predicted", "std"),
+            actual_median    = ("actual",    "median"),
+            actual_halfiqr   = ("actual",    _half_iqr),
+            predicted_median = ("predicted", "median"),
+            predicted_halfiqr= ("predicted", _half_iqr),
+            count            = ("actual",    "count"),
         ).reset_index()
         agg["feature"] = feat
         parts.append(agg)

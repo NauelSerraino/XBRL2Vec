@@ -304,11 +304,7 @@ def run_experiment(
                 ds.X_fin, ds.X_macro, ds.meta_df, ds.fin_cols,
                 T_in=t_in, T_out=t_out,
             )
-            log_forecast_aggregate_plot(
-                ts_df, logger,
-                cutoff_quarter="2019Q4",
-                split_label=split,
-            )
+            log_forecast_aggregate_plot(ts_df, logger, split_label=split)
 
 
 # ---------------------------------------------------------------------------
