@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from services.config import SEQ_LEN
+from services.config import SEQ_LEN, TICKERS as _EXCLUDED_TICKERS
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,7 @@ class TrainConfig(BaseModel):
     t_in: int = 12
     t_out: int = 4
     norm_mode: str = "per_ticker"
+    macro_weight_mode: str = "corr"  # "corr" | "ridge" | "xgboost"
 
     @classmethod
     def from_args(cls, args) -> "TrainConfig":
@@ -63,6 +64,7 @@ class TrainConfig(BaseModel):
             t_in=args.t_in,
             t_out=args.t_out,
             norm_mode=args.norm_mode,
+            macro_weight_mode=args.macro_weight_mode,
         )
 
 
@@ -151,6 +153,9 @@ def load_raw_data(
         mask = df["quarter"].isin(_QUARTERS_TO_DELETE)
         df.drop(df[mask].index, inplace=True)
 
+    for df in [bs_df, is_df, cf_df]:
+        df.drop(df[df["ticker"].isin(_EXCLUDED_TICKERS)].index, inplace=True)
+
     return bs_df, is_df, cf_df, macro_df, metadata
 
 
@@ -166,6 +171,9 @@ def load_test_data(
 
     for df in [bs, is_, cf]:
         df.drop(df[df["quarter"].isin(_QUARTERS_TO_DELETE)].index, inplace=True)
+
+    for df in [bs, is_, cf]:
+        df.drop(df[df["ticker"].isin(_EXCLUDED_TICKERS)].index, inplace=True)
 
     bs, is_, cf, _ = filter_columns(bs, is_, cf, macro_df)
     return bs, is_, cf

@@ -7,6 +7,7 @@ Objective: predict next quarter's financials from T-1 past quarters + macro.
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 import os
 from pathlib import Path
@@ -111,18 +112,24 @@ def seed_everything(seed: int) -> None:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--latent_factors", nargs="+", type=float, default=[0.5, 0.8, 1, 2])
+    parser.add_argument("--latent_factors", nargs="+", type=float, default=[0.5, 1, 2])
     parser.add_argument("--epochs",         type=int,   default=20)
     parser.add_argument("--batch_size",     type=int,   default=32)
     parser.add_argument("--learning_rate",  type=float, default=1e-3)
     parser.add_argument("--seed",           type=int,   default=42)
-    parser.add_argument("--t_in",           type=int,   default=20)
-    parser.add_argument("--t_out",          type=int,   default=4)
+    parser.add_argument("--t_in",  nargs="+", type=int,  default=[12, 16, 20])
+    parser.add_argument("--t_out", nargs="+", type=int,  default=[1, 4])
     parser.add_argument(
         "--norm_mode",
         choices=["global", "per_ticker"],
-        default="per_ticker",
+        default="global",
         help="Must match the norm_mode used when running preprocess.py.",
+    )
+    parser.add_argument(
+        "--macro_weight_mode",
+        choices=["corr", "ridge", "xgboost"],
+        default="xgboost",
+        help="Method to weight macro variables per company: corr (Pearson), ridge (Ridge betas), xgboost (sign-corrected importances).",
     )
     return parser.parse_args()
 
@@ -313,8 +320,7 @@ def run_experiment(
 
 def main() -> None:
     args = parse_args()
-    config = TrainConfig.from_args(args)
-    seed_everything(config.seed)
+    seed_everything(args.seed)
 
     BASE_DIR       = Path("/home/nauel/vscode/XBRL2Vec/data")
     META_DIR       = BASE_DIR / "in"
@@ -323,28 +329,39 @@ def main() -> None:
     # ---- Load & transform train data ----
     print("[INFO] Loading train data")
     bs_df, is_df, cf_df, macro_df, metadata_sector_df = load_raw_data(
-        PREPROCESS_DIR, META_DIR, norm_mode=config.norm_mode
+        PREPROCESS_DIR, META_DIR, norm_mode=args.norm_mode
     )
     bs_df, is_df, cf_df, macro_df = filter_columns(bs_df, is_df, cf_df, macro_df)
 
     print("[INFO] Building aligned dataset")
     raw_train_ds = create_aligned_dataset(bs_df, is_df, cf_df, macro_df)
-    train_ds     = transform_dataset(raw_train_ds)
+    train_ds     = transform_dataset(raw_train_ds, macro_weight_mode=args.macro_weight_mode)
 
     # ---- Load & transform test data ----
     print("[INFO] Loading test data")
-    bs_test, is_test, cf_test = load_test_data(PREPROCESS_DIR, macro_df, norm_mode=config.norm_mode)
+    bs_test, is_test, cf_test = load_test_data(PREPROCESS_DIR, macro_df, norm_mode=args.norm_mode)
     raw_test_ds = create_aligned_dataset(bs_test, is_test, cf_test, macro_df)
-    test_ds     = transform_dataset(raw_test_ds)
+    test_ds     = transform_dataset(raw_test_ds, macro_weight_mode=args.macro_weight_mode)
 
     # ---- MLflow setup ----
     mlflow.set_tracking_uri("http://localhost:5000")
     mlflow.set_experiment("Forecaster_vs_Blind_Comparison")
 
-    # ---- Experiment loop ----
+    # ---- Experiment loop (Cartesian product: t_in × t_out × latent_factors) ----
     print("[INFO] Starting experiments")
-    for factor in config.latent_factors:
+    for t_in, t_out, factor in itertools.product(args.t_in, args.t_out, args.latent_factors):
         latent_dim = max(1, math.ceil(train_ds.fin_dim * factor))
+        config = TrainConfig(
+            latent_factors=args.latent_factors,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            seed=args.seed,
+            t_in=t_in,
+            t_out=t_out,
+            norm_mode=args.norm_mode,
+            macro_weight_mode=args.macro_weight_mode,
+        )
         run_experiment(config, train_ds, test_ds, metadata_sector_df, latent_dim)
 
     print("[INFO] All experiments completed!")
