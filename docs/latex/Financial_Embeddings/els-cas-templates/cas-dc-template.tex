@@ -1,0 +1,310 @@
+%% 
+%% Copyright 2019-2024 Elsevier Ltd
+%% 
+%% This file is part of the 'CAS Bundle'.
+%% --------------------------------------
+%% 
+%% It may be distributed under the conditions of the LaTeX Project Public
+%% License, either version 1.3c of this license or (at your option) any
+%% later version.  The latest version of this license is in
+%%    http://www.latex-project.org/lppl.txt
+%% and version 1.3c or later is part of all distributions of LaTeX
+%% version 1999/12/01 or later.
+%% 
+%% The list of all files belonging to the 'CAS Bundle' is
+%% given in the file `manifest.txt'.
+%% 
+%% Template article for cas-dc documentclass for 
+%% double column output.
+
+\documentclass[a4paper,fleqn]{cas-dc}
+
+%\usepackage[numbers]{natbib}
+%\usepackage[authoryear]{natbib}
+\usepackage[authoryear,longnamesfirst]{natbib}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{url}
+
+%%%Author macros
+\def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
+\tsc{WGM}
+\tsc{QE}
+%%%
+
+\begin{document}
+\let\WriteBookmarks\relax
+\def\floatpagepagefraction{1}
+\def\textpagefraction{.001}
+
+\shorttitle{}    
+\shortauthors{Serraino et al.}  
+
+\title[mode = title]{XBRL2Vec: an Embedding System for Company Fundamentals' Representation and Forecast}
+
+\author[1]{Nauel Serraino}[orcid=0000-0002-6576-0209]
+\cormark[1]
+\ead{nauel.serraino@unibs.it}
+\credit{...}
+
+\author[1]{Paola Zuccolotto}[orcid=0000-0003-4399-7018]
+\ead{paola.zuccolotto@unibs.it}
+\credit{...}
+
+\author[1]{Angela Locoro}[orcid=0000-0000-0000-0000]
+\ead{angela.locoro@unibs.it}
+\credit{...}
+
+\affiliation[1]{
+    organization={Department of Economics and Management, University of Brescia},
+    addressline={},
+    city={Brescia},
+    postcode={25123},
+    state={},
+    country={Italy}}
+
+\cortext[1]{Corresponding author}
+
+\begin{abstract}
+This paper presents a forecasting autoencoder for compact embeddings of corporate financial trajectories enriched with macroeconomic context. We propose a novel architecture to generate financial embeddings that extends DLinear forecasting beyond its univariate nature through FiLM conditioning.
+This approach allows macroeconomic context to reshape how financial patterns are encoded, without sacrificing the simplicity and efficiency of linear forecasting. Our model processes macroeconomic indicators in a parallel encoder and uses the resulting representation to modulate the financial latent space via a learned affine transformation. An ablation variant without macro conditioning serves as a controlled baseline, isolating the contribution of macroeconomic context to forecast quality. Furthermore, we showcase how our latent representations encode not only firm-level dynamics but also the broader economic regime in which they occur, making them suitable as analytical inputs for downstream tasks such as clustering, retrieval, or risk scoring.
+\end{abstract}
+
+\begin{keywords}
+Company fundamentals \sep
+Time-series forecasting \sep 
+FiLM \sep 
+Autoencoder
+\end{keywords}
+
+\maketitle
+
+\section{Introduction}
+Introduction
+
+\section{Literature Review}
+
+Despite the potential of machine learning for corporate financial analysis, the field lacks unified and standardised datasets for company fundamentals. In fact, comprehensive databases such as Compustat, S\&P Capital IQ, and Bureau van Dijk exist, but are proprietary and not uniformly accessible across institutions, fragmenting the research landscape. Publicly available alternatives, such as SEC EDGAR filings, partially address this gap but introduce their own difficulties around inconsistent formatting and heavy preprocessing requirements. Several studies identify this fragmentation as a central obstacle to progress in the field: \cite{zavitsanos_machine_2025} highlight the absence of standardized datasets and difficulties of compiling open source data; while \cite{divo_forecasting_2025} point out the considerable amount of manual preprocessing required to unify the set of information of the financial statements. Moreover, even when commercial vendors are used, their data can diverge from the original as-filed figures in ways that affect empirical conclusions \citep{du_lost_2023}. Despite these challenges, a growing body of literature investigates corporate financial statements as a target domain for predictive modeling.
+
+\subsection{Machine Learning for Financial Statement Analysis}
+
+One of the most common Machine Learning application in the field aims to derive investment-relevant signals from
+financial statements. \citet{amel-zadeh_machine_2020} compare a range of models, including Random Forests and neural networks, in their ability to predict abnormal stock returns around earnings announcements using past financial statement data alone, finding that ensemble methods excel at moderate market reactions while nonlinear models better capture extremes. On the credit risk side, \citet{pamuk_opening_2023} demonstrate that ML-based models combining sampling strategies with multi-class classifiers can forecast corporate credit ratings from annual statements, with XGBoost being the best forecasting method for the rating class, while also discussing practical constraints around regulatory compliance in a sector that is traditionally anchored in classical statistical methods.
+
+\subsection{Forecasting Company Fundamentals}
+
+Another branch of this field concerns the forecast of company fundamentals from financial statements which has attracted growing
+attention across both finance and machine learning communities. \citet{divo_forecasting_2025} benchmark 24 deterministic and probabilistic models on real corporate data, showing that surpassing simple baselines in deterministic forecasting remains challenging, while probabilistic forecasts from deep learning models outperform classical statistical approaches, particularly in uncertainty estimation, with accuracy comparable to human analyst expectations. Complementary to this, \citet{phan_leveraging_2024} investigate the use of fundamental analysis, including key financial ratios and discounted cash flow models, as inputs to LSTM, CNN, and logistic regression models for stock trend prediction, finding that even simple linear classifiers can achieve competitive accuracy when grounded in intrinsic valuation signals. These works collectively motivate our focus on financial time series as a rich and structured data modality, while highlighting the importance of incorporating domain-relevant features beyond raw price data.
+
+\subsection{Representation Learning for Financial Assets}
+
+A parallel line of work focuses on learning dense representations of financial entities rather than producing direct forecasts. \citet{stock_embedding_2022} adapt the word embedding paradigm to financial assets by defining target:context sets from historical return data, in which the context stocks of a target asset at each point in time are those exhibiting the closest return, and training a neural model to learn embeddings such that frequently co-occurring stocks end up close in the latent space. While their approach is centered on price-based signals and inter-asset relationships rather than the firm-level fundamental
+trajectories we model, their work inspired the broader premise of our architecture: that financial entities can be meaningfully represented as compact latent vectors reusable for downstream tasks such as retrieval, clustering, and risk scoring.
+
+% ============================================================
+\section{Problem Formulation}\label{sec:data}
+% ============================================================
+
+\subsection{Data Sources}
+The primary inputs are cross-sectional quarterly financial statements standardised
+via \texttt{finqual}, \footnote{\url{https://pypi.org/project/finqual/}: a Python library that
+harmonises XBRL-tagged filings into a consistent, item-level schema across issuers and fiscal periods.}
+a Python library that maps raw XBRL filings to a canonical, item-level schema.
+For each company we collect three statement types: balance sheet (BS), income statement (IS), and cash-flow statement (CF).  After merging across statement types
+and dropping items with systematic missingness, we retain $F$ numeric features per company per quarter.  In addition, each company is associated with a GICS sector label, available in the accompanying metadata, which is used for downstream stratified analysis.
+
+The dataset spans from 2012-Q1 to 2024-Q4, yielding a total of 2,855 company--quarter observations, after removing tickers with
+incomplete coverage.  Each raw financial item $x_{i,t,f}$ is transformed to its year-over-year ($\Delta_Y$) difference,
+computed within each company's time series. Letting $\mathcal{C} = \{c_1, \dots, c_N\}$ denote the universe of $N$ companies observed over $T$ quarters, stacking across companies and time yields the raw financial tensor:
+\begin{equation}
+  \mathbf{X}_{\mathrm{fin}} \;\in\; \mathbb{R}^{N \times T \times F}.
+\end{equation}
+\subsection{Normalisation}
+Financial features exhibit heavy tails and large cross-sectional scale differences. We apply a two-stage normalisation to address both issues.  First, a global $z$-score standardisation is fit \emph{exclusively on the training companies} (to prevent data leakage) and then applied to both splits:
+\begin{equation}
+  \tilde{x}_{i,t,f}
+  \;=\; \frac{x_{i,t,f} \;-\; \mu_f^{\mathrm{tr}}}
+             {\sigma_f^{\mathrm{tr}}},
+  \label{eq:zscore}
+\end{equation}
+where $\mu_f^{\mathrm{tr}}$ and $\sigma_f^{\mathrm{tr}}$ are the mean and standard
+deviation of feature $f$ computed over \emph{all} training companies and quarters.
+Second, a sign-preserving log compression is applied to both the normalised
+financial tensor and the macro tensor to further reduce the influence of extreme
+values:
+\begin{equation}
+  \phi(x) \;=\; \mathrm{sign}(x)\cdot\ln\!\bigl(1 + |x|\bigr).
+  \label{eq:symlog}
+\end{equation}
+Macro data are \emph{not} z-score normalised; only the symmetric-log
+transformation~\eqref{eq:symlog} is applied to them, since they are already
+expressed in comparable units across the time dimension.
+
+\subsection{Macroeconomic Indicators}
+Macroeconomic conditioning variables are sourced from the Federal Reserve Economic
+Data (FRED) database at a quarterly frequency, covering the same period as the
+financial data.  The seven base series used are:
+\begin{itemize}
+  \item \textbf{GDP}: Real Gross Domestic Product;
+  \item \textbf{INDPRO}: Industrial Production Index;
+  \item \textbf{PSAVERT}: Personal Saving Rate;
+  \item \textbf{CPIAUCSL}: Consumer Price Index for All Urban Consumers
+        (seasonally adjusted);
+  \item \textbf{DFF}: Federal Funds Effective Rate;
+  \item \textbf{MRTSSM44000USS}: Advance Retail Sales: Retail and Food Services;
+  \item \textbf{UNEMPLOY}: Unemployment Level.
+\end{itemize}
+Analogously to the financial features, transformed to its year-over-year $\Delta_Y$ differences. Because macro series are aggregate, the same $M$-dimensional
+vector is shared across all companies at each quarter:
+\begin{equation}
+  \mathbf{X}_{\mathrm{mac}} \;\in\; \mathbb{R}^{N \times T \times M}.
+\end{equation}
+
+\subsection{Train/Test Split}
+To preserve the temporal structure of each company's time series, the dataset is
+split at the company level: every quarter of a given company is assigned entirely to either the training or the test set. 90\% of companies are allocated to the training set and the remaining 10\% to the test set, which is held out solely to assess out-of-sample generalisation and detect overfitting.  The split is performed with a fixed random seed for reproducibility.
+
+\subsection{Sliding-Window Construction}
+Training and evaluation are performed on fixed-length windows.  Given a look-back
+horizon $t_{\mathrm{in}}$ and a forecast horizon $t_{\mathrm{out}}$, we extract all admissible windows
+from $\mathbf{X}_{\mathrm{fin}}$ and $\mathbf{X}_{\mathrm{mac}}$ along the time axis:
+\begin{align}
+  x_{\mathrm{fin}}^{(w)} &= \mathbf{X}_{\mathrm{fin}}[w : w{+}t_{\mathrm{in}}],\\
+  y^{(w)} &= \mathbf{X}_{\mathrm{fin}}[w{+}t_{\mathrm{in}} : w{+}t_{\mathrm{in}}{+}t_{\mathrm{out}}],\\
+  x_{\mathrm{mac}}^{(w)} &= \mathbf{X}_{\mathrm{mac}}[w : w{+}t_{\mathrm{in}}],
+\end{align}
+for $w = 0, \dots, T - t_{\mathrm{in}} - t_{\mathrm{out}}$.  After flattening the company and window axes
+the dataset consists of tuples
+$\bigl(x_{\mathrm{fin}}, x_{\mathrm{mac}}, y\bigr) \in
+ \mathbb{R}^{B \times t_{\mathrm{in}} \times F} \times
+ \mathbb{R}^{B \times t_{\mathrm{in}} \times M} \times
+ \mathbb{R}^{B \times t_{\mathrm{out}} \times F}$,
+where $B$ denotes the batch size.
+
+\subsection{Design Rationale}
+Transformer-based architectures have been shown to be universal approximators of
+continuous sequence-to-sequence functions \citep{yun_are_2020}, which motivated
+their widespread adoption in time-series forecasting.  However,
+\citet{zeng_are_2023} demonstrated empirically that a family of simple decomposition-based linear models (DLinear) consistently outperforms Transformer variants on long-horizon forecasting benchmarks.  The key limitation of
+DLinear, however, is that it processes each feature independently, making it incapable of incorporating exogenous
+multivariate context such as macroeconomic conditions.
+
+To overcome its univariate limitation, we augment the DLinear with Feature-wise Linear Modulation (FiLM) \citep{perez_film_2017}: macro-derived scaling and
+shifting parameters are injected into the financial representation via a lightweight
+affine transformation, enabling context-aware modulation without breaking the
+temporal inductive bias of the linear encoder.  The full ForecastingAE architecture is illustrated in Figure~\ref{fig:architecture}.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{els-cas-templates/figs/full-architecture.png}
+  \caption{ForecastingAE architecture.  Financial and macro inputs are encoded by
+           parallel DLinear encoders.  The macro embedding drives a FiLM conditioner
+           that modulates the financial representation before latent projection and
+           decoding.}
+  \label{fig:architecture}
+\end{figure}
+
+
+\subsubsection{DLinear Financial Encoder}
+\label{ssec:enc_fin}
+
+The financial encoder decomposes the input into a \emph{trend} component and a
+\emph{seasonal} component using a symmetric moving average with kernel
+size $k$:
+\begin{equation}
+  \hat{\bm{\tau}} \;=\; \mathrm{MA}_k\!\left(x_{\mathrm{fin}}\right), \\
+  \hat{\bm{s}} \;=\; x_{\mathrm{fin}} - \hat{\bm{\tau}},\\
+\end{equation}
+with
+\begin{equation*}
+     \hat{\bm{s}},\, \hat{\bm{\tau}} \;\in\; \mathbb{R}^{B \times t_{\mathrm{in}} \times F}.
+\end{equation*}
+ 
+Each component is then projected from $t_{\mathrm{in}}$ time steps to a single scalar
+\emph{per feature} via a shared linear map applied channel-independently:
+\begin{equation}
+  \bm{e}_{s,f} \;=\; \hat{\bm{s}}_{f}\,\mathbf{w}_s^{\!\top} \;\in\; \mathbb{R}^{B},
+  \qquad
+  \bm{e}_{\tau,f} \;=\; \hat{\bm{\tau}}_{f}\,\mathbf{w}_\tau^{\!\top} \;\in\; \mathbb{R}^{B},
+\end{equation}
+for each $f \in \{1,\dots,F\}$.  Stacking across features and concatenating the two
+projections yields the financial embedding
+\begin{equation}
+  h_{\mathrm{fin}} \;=\;
+  \bigl[\bm{e}_{s,1},\dots,\bm{e}_{s,F}\,\big|\,
+        \bm{e}_{\tau,1},\dots,\bm{e}_{\tau,F}\bigr]
+  \;\in\; \mathbb{R}^{B \times 2F}.
+\end{equation}
+
+\subsubsection{DLinear Macro Encoder}
+\label{ssec:enc_mac}
+
+An identical decomposition and channel-independent projection is applied to the
+macro input $x_{\mathrm{mac}} \in \mathbb{R}^{B \times t_{\mathrm{in}} \times M}$, producing
+\begin{equation}
+  h_{\mathrm{mac}} \;\in\; \mathbb{R}^{B \times 2M}.
+\end{equation}
+
+\subsubsection{Macro Conditioner and FiLM Modulation}
+\label{ssec:film}
+
+The macro embedding $h_{\mathrm{mac}}$ is passed through a FiLM parameter
+generator \citep{perez_film_2017} a single linear layer that produces
+feature-wise scale and shift parameters:
+\begin{equation}
+  [\,\bm{\gamma} \;;\; \bm{\beta}\,]
+  \;=\; \mathbf{W}_c\, h_{\mathrm{mac}} + \mathbf{b}_c;
+  \qquad
+  \bm{\gamma},\, \bm{\beta} \;\in\; \mathbb{R}^{B \times 2F}.
+\end{equation}
+The financial representation is then modulated via a feature-wise affine
+transformation:
+\begin{equation}
+  h'_{\mathrm{fin}} \;=\; \bm{\gamma} \odot h_{\mathrm{fin}} + \bm{\beta}
+  \;\in\; \mathbb{R}^{B \times 2F},
+\end{equation}
+where $\odot$ denotes element-wise multiplication.  This step allows macroeconomic
+conditions to rescale and shift each dimension of the financial embedding without
+altering the underlying channel-independent structure of the encoder.
+
+\subsubsection{Latent Projection}
+\label{ssec:latent}
+
+The modulated embedding is linearly projected onto a $d_z$-dimensional latent
+space:
+\begin{equation}
+  z \;=\; \mathbf{W}_z\, h'_{\mathrm{fin}} + \mathbf{b}_z,
+  \qquad z \;\in\; \mathbb{R}^{B \times d_z}.
+\end{equation}
+The latent dimensionality $d_z$ is a hyperparameter expressed as a factor of $F$:
+$d_z = \lceil \alpha \cdot F \rceil$, with $\alpha \in \{0.5, 1, 2, \dots\}$.
+When $\alpha = 1$, the latent vector has the same dimensionality as the input feature space, resulting in a bottleneck of equal size.
+For $\alpha < 1$, the model learns a compressed representation, imposing a stricter information bottleneck, whereas $\alpha > 1$ enlarges the latent space beyond the input dimension, enabling the model to disentangle features into a more expressive representation.
+
+\subsubsection{Financial Decoder}
+\label{ssec:decoder}
+
+The decoder maps the latent vector $z$ back to the forecast horizon $t_{\mathrm{out}}$ via a
+two-layer MLP followed by a reshape operation: a linear projection of size $d_z \times d_z$ followed by ReLU activation, a second linear projection to $t_{\mathrm{out}} \cdot F$, and a final reshape to $\mathbb{R}^{B \times t_{\mathrm{out}} \times F}$.
+
+\section{Results}
+Results
+
+\section{Discussion}
+Discussion
+
+\section{Conclusions}
+Conclusions
+
+\printcredits
+
+\section*{Acknowledgements}
+The authors wish to thank Harry He for his valuable support in explaining the inner workings of the Finqual repository, which was instrumental in standardizing the financial dataset used in this work.
+
+\bibliographystyle{cas-model2-names}
+\bibliography{cas-refs}
+
+\end{document}
