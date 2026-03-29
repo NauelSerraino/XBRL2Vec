@@ -109,6 +109,8 @@ trajectories we model, their work inspired the broader premise of our architectu
 % ============================================================
 
 \subsection{Data Sources}
+
+\paragraph{Financial Data}
 The primary inputs are cross-sectional quarterly financial statements standardised
 via \texttt{finqual}, \footnote{\url{https://pypi.org/project/finqual/}: a Python library that
 harmonises XBRL-tagged filings into a consistent, item-level schema across issuers and fiscal periods.}
@@ -122,28 +124,8 @@ computed within each company's time series. Letting $\mathcal{C} = \{c_1, \dots,
 \begin{equation}
   \mathbf{X}_{\mathrm{fin}} \;\in\; \mathbb{R}^{N \times T \times F}.
 \end{equation}
-\subsection{Normalisation}
-Financial features exhibit heavy tails and large cross-sectional scale differences. We apply a two-stage normalisation to address both issues.  First, a global $z$-score standardisation is fit \emph{exclusively on the training companies} (to prevent data leakage) and then applied to both splits:
-\begin{equation}
-  \tilde{x}_{i,t,f}
-  \;=\; \frac{x_{i,t,f} \;-\; \mu_f^{\mathrm{tr}}}
-             {\sigma_f^{\mathrm{tr}}},
-  \label{eq:zscore}
-\end{equation}
-where $\mu_f^{\mathrm{tr}}$ and $\sigma_f^{\mathrm{tr}}$ are the mean and standard
-deviation of feature $f$ computed over \emph{all} training companies and quarters.
-Second, a sign-preserving log compression is applied to both the normalised
-financial tensor and the macro tensor to further reduce the influence of extreme
-values:
-\begin{equation}
-  \phi(x) \;=\; \mathrm{sign}(x)\cdot\ln\!\bigl(1 + |x|\bigr).
-  \label{eq:symlog}
-\end{equation}
-Macro data are \emph{not} z-score normalised; only the symmetric-log
-transformation~\eqref{eq:symlog} is applied to them, since they are already
-expressed in comparable units across the time dimension.
 
-\subsection{Macroeconomic Indicators}
+\paragraph{Macroeconomic Data}
 Macroeconomic conditioning variables are sourced from the Federal Reserve Economic
 Data (FRED) database at a quarterly frequency, covering the same period as the
 financial data.  The seven base series used are:
@@ -162,6 +144,28 @@ vector is shared across all companies at each quarter:
 \begin{equation}
   \mathbf{X}_{\mathrm{mac}} \;\in\; \mathbb{R}^{N \times T \times M}.
 \end{equation}
+
+
+\subsection{Normalisation}
+Both financial and macroeconomic features undergo an identical two-stage normalisation.
+First, a global $z$-score standardisation is applied column-wise:
+\begin{equation}
+  \tilde{x}_{f}
+  \;=\; \frac{x_{f} \;-\; \mu_f}{\sigma_f},
+  \label{eq:zscore}
+\end{equation}
+where $\mu_f$ and $\sigma_f$ are the mean and standard deviation of feature $f$
+computed over the fitting set.  For financial data the scaler is fit
+\emph{exclusively on the training companies} to prevent data leakage; for macro
+data, which is aggregate and not split by company, the scaler is fit on all
+available quarters.  Second, a sign-preserving log compression is applied to
+further reduce the influence of extreme values:
+\begin{equation}
+  \phi(x) \;=\; \mathrm{sign}(x)\cdot\ln\!\bigl(1 + |x|\bigr).
+  \label{eq:symlog}
+\end{equation}
+The two stages are applied in sequence to both datasets, yielding representations
+with controlled scale and compressed tails.
 
 \subsection{Train/Test Split}
 To preserve the temporal structure of each company's time series, the dataset is
