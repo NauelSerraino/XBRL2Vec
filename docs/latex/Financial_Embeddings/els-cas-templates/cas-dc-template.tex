@@ -28,6 +28,7 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{url}
+\usepackage{float}
 
 %%%Author macros
 \def\tsc#1{\csdef{#1}{\textsc{\lowercase{#1}}\xspace}}
@@ -189,8 +190,7 @@ $\bigl(x_{\mathrm{fin}}, x_{\mathrm{mac}}, y\bigr) \in
 where $B$ denotes the batch size.
 
 \subsection{Design Rationale}
-Transformer-based architectures have been shown to be universal approximators of
-continuous sequence-to-sequence functions \citep{yun_are_2020}, which motivated
+Transformer-based architectures have been shown to be universal approximators of continuous sequence-to-sequence functions \citep{yun_are_2020}, which motivated
 their widespread adoption in time-series forecasting.  However,
 \citet{zeng_are_2023} demonstrated empirically that a family of simple decomposition-based linear models (DLinear) consistently outperforms Transformer variants on long-horizon forecasting benchmarks.  The key limitation of
 DLinear, however, is that it processes each feature independently, making it incapable of incorporating exogenous
@@ -201,7 +201,8 @@ shifting parameters are injected into the financial representation via a lightwe
 affine transformation, enabling context-aware modulation without breaking the
 temporal inductive bias of the linear encoder.  The full ForecastingAE architecture is illustrated in Figure~\ref{fig:architecture}.
 
-\begin{figure}[h]
+\clearpage
+\begin{figure}[H]
   \centering
   \includegraphics[width=\linewidth]{els-cas-templates/figs/full-architecture.png}
   \caption{ForecastingAE architecture.  Financial and macro inputs are encoded by
@@ -294,8 +295,106 @@ For $\alpha < 1$, the model learns a compressed representation, imposing a stric
 The decoder maps the latent vector $z$ back to the forecast horizon $t_{\mathrm{out}}$ via a
 two-layer MLP followed by a reshape operation: a linear projection of size $d_z \times d_z$ followed by ReLU activation, a second linear projection to $t_{\mathrm{out}} \cdot F$, and a final reshape to $\mathbb{R}^{B \times t_{\mathrm{out}} \times F}$.
 
+\subsection{Ablation Baseline: Blind Model}
+\label{ssec:blind}
+
+To isolate the contribution of macroeconomic conditioning, we train a second variant, the \textbf{Blind model} (FinancialOnlyAE), alongside the full ForecastingAE in every experimental run.  The blind model removes the macro encoder, the MacroConditioner, and the FiLM modulation entirely, operating on financial data only.  Its latent projection reads directly from the unmodulated financial embedding:
+\begin{equation}
+  z \;=\; \mathbf{W}_z\, h_{\mathrm{fin}} + \mathbf{b}_z,
+\end{equation}
+with the same decoder architecture and training objective as the contextual model.
+
+
 \section{Results}
-Results
+
+\subsection{Experimental Setup}
+A central claim of this work is that the properties of ForecastingAE, namely the
+informational gain from macroeconomic conditioning, the structure of the latent
+space, and the macro sensitivity of individual features, are robust rather than
+artefacts of a specific architectural choice.  To substantiate this, we do not
+evaluate a single configuration but instead run the full training and evaluation
+pipeline across all combinations of three hyperparameters via a Cartesian product:
+the look-back horizon $t_{\mathrm{in}} \in \{12, 16, 20\}$ quarters, the forecast
+horizon $t_{\mathrm{out}} \in \{1, 4\}$ quarters, and the latent scale factor
+$\alpha \in \{0.5, 1, 2\}$, yielding $3 \times 2 \times 3 = 18$ configurations in
+total.  All other hyperparameters are held fixed across the grid: Adam optimiser
+with learning rate $10^{-3}$, batch size 32, and 20 training epochs.
+Both the ForecastingAE and its blind ablation are trained and evaluated independently
+for each configuration, so that any finding reported in the following sections can
+be assessed for consistency across the full grid rather than a single hand-picked setting.
+
+\subsection{Evaluation Metrics}
+
+\subsubsection{Loss Comparison}
+MSE is the optimisation target; MAE and Smooth-L1 are tracked as diagnostic controls
+but are not directly optimised.  All three metrics are reported for both
+ForecastingAE and the blind model at every epoch, enabling a direct comparison of
+learning dynamics.  OOS metrics are additionally computed on the held-out test
+companies to detect overfitting and assess generalisation.
+
+\subsubsection{Feature Importance}
+To quantify how much each input feature contributes to the forecast, we adopt a
+permutation-based importance measure.  For a given model and a set of $n$ input
+samples, the base reconstruction loss per sample is first computed.  Then, for
+each input feature $j$, the values of that feature are randomly permuted across
+samples, breaking its association with the target while leaving all other features
+intact.  The importance of feature $j$ for predicting output feature $k$ is:
+\begin{equation}
+  I_{k,j} \;=\; \ell^{\mathrm{perm}}_k(j) - \ell_k,
+\end{equation}
+where $\ell_k$ is the mean per-sample MSE for output $k$ under the original inputs
+and $\ell^{\mathrm{perm}}_k(j)$ is the mean per-sample MSE after permuting feature $j$.  A larger $I_{k,j}$ indicates that disrupting feature
+$j$ degrades the prediction of output $k$ more severely, i.e.\ the model relies
+more heavily on that feature.  The full importance matrix $\mathbf{I} \in
+\mathbb{R}^{F_{\mathrm{out}} \times (F + M)}$ is computed for both the contextual
+and blind models.
+
+\subsubsection{Embedding Geometry}
+To verify that the learned latent representations preserve the relational structure
+present in the input data, we compare pairwise distances in the original financial
+space against pairwise distances in the latent space.  For each pair of companies
+$(i, j)$, two distance measures are computed in both spaces:
+\begin{align}
+  d^{\cos}(i,j) &\;=\; 1 - \frac{z_i \cdot z_j}{\|z_i\|\,\|z_j\|}, \\
+  d^{\ell_2}(i,j) &\;=\; \|z_i - z_j\|_2.
+\end{align}
+The Spearman rank correlation between the input-space and latent-space distance
+vectors is reported as a measure of geometric faithfulness.
+
+\subsubsection{Saliency Analysis}
+Attribution scores are computed via Integrated Gradients
+\citep{sundararajan_axiomatic_2017}, with a zero tensor as baseline and $50$
+interpolation steps.  Two attribution targets are considered:
+\begin{itemize}
+  \item \textbf{Latent saliency}: the scalar target is $\|z\|_2$, attributing
+        which input features most influence the norm of the latent representation;
+  \item \textbf{Reconstruction saliency}: the scalar target is the reconstruction
+        MSE $\|\hat{x} - y\|_F^2$, attributing which inputs most influence
+        forecast error.
+\end{itemize}
+For each mode, attributions are computed globally (averaged over all samples) and
+per company, yielding a macro-to-financial exposure ratio:
+\begin{equation}
+  \rho_i \;=\; \frac{\sum_m |\mathrm{IG}_{i,m}|}
+                    {\sum_f |\mathrm{IG}_{i,f}| + \sum_m |\mathrm{IG}_{i,m}|},
+\end{equation}
+where the sums run over macro features $m$ and financial features $f$ respectively.
+$\rho_i \in [0, 1]$ measures the share of total attribution mass assigned to
+macroeconomic inputs for company $i$: a value close to 1 indicates that the model
+relies predominantly on macro signals when processing that company, while a value
+close to 0 indicates that the output is driven almost entirely by firm-level
+financial history.
+
+\subsubsection{Variance Explanation via Linear Probing}
+To quantify how much of each representation is linearly explained by financial and
+macroeconomic inputs, we fit the following ordinary least squares model separately
+for the latent vector $z$ and the reconstruction $\hat{x}$:
+\begin{equation}
+  \mathbf{A} \;\sim\; \beta_1\,\mathbf{X}_{\mathrm{fin}} + \beta_2\,\mathbf{X}_{\mathrm{mac}},
+  \quad \mathbf{A} \in \{z,\, \hat{x}\},
+\end{equation}
+and report the resulting $R^2$ for the financial and macro regressors separately,
+yielding a $2 \times 2$ table of scores.
 
 \section{Discussion}
 Discussion
