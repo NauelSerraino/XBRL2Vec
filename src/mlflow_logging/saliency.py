@@ -25,16 +25,24 @@ from services.data import SaliencyMode
 class _LatentWrapper(torch.nn.Module):
     """Wraps a model to expose a scalar output for IG attribution."""
 
-    def __init__(self, model: torch.nn.Module, mode: SaliencyMode):
+    def __init__(self, model: torch.nn.Module, mode: SaliencyMode, Y_fin: torch.Tensor | None = None):
         super().__init__()
         self.model = model
         self.mode  = mode
+        self.Y_fin = Y_fin  # forecast target; if None, uses X_fin (autoencoder case)
 
     def forward(self, X_fin: torch.Tensor, X_macro: torch.Tensor) -> torch.Tensor:
         z, x_hat = self.model(X_fin, X_macro)
         if self.mode == SaliencyMode.LATENT:
             return torch.norm(z, dim=1)
-        return ((x_hat - X_fin) ** 2).mean(dim=(1, 2))
+        if self.Y_fin is not None:
+            # Captum expands the batch to [N * n_steps, ...]; tile Y_fin to match.
+            n_orig = self.Y_fin.shape[0]
+            repeats = x_hat.shape[0] // n_orig
+            target = self.Y_fin.repeat(repeats, 1, 1)
+        else:
+            target = X_fin
+        return ((x_hat - target) ** 2).mean(dim=(1, 2))
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +128,8 @@ def compute_full_saliency(
     metadata_sector_df: pd.DataFrame,
     logger: ArtifactLogger,
     device: torch.device = DEVICE,
-    top_n: int = 30,
+    top_n: int = 20,
+    Y_fin: torch.Tensor | None = None,
 ) -> dict[str, dict]:
     """
     Run Integrated Gradients for both SaliencyMode values.
@@ -132,13 +141,14 @@ def compute_full_saliency(
 
     xf = X_fin.to(device)
     xm = X_macro.to(device)
+    yf = Y_fin.to(device) if Y_fin is not None else None
     baseline_fin   = torch.zeros_like(xf)
     baseline_macro = torch.zeros_like(xm)
 
     results = {}
 
     for mode in SaliencyMode:
-        wrapper = _LatentWrapper(model, mode)
+        wrapper = _LatentWrapper(model, mode, Y_fin=yf)
         ig = IntegratedGradients(wrapper)
 
         attr_fin, attr_macro = ig.attribute(
@@ -156,26 +166,30 @@ def compute_full_saliency(
 
         mlflow.log_metric(f"{mode.value}_macro_ratio", macro_ratio)
 
+        fin_labels   = [c.replace("_DIFF_Y", "") for c in fin_cols]
+        macro_labels = [c.replace("_DIFF_Y", "") for c in macro_cols]
+
         df_global = pd.concat([
-            pd.DataFrame({"feature": fin_cols,   "saliency": attr_fin_g,   "type": "financial"}),
-            pd.DataFrame({"feature": macro_cols,  "saliency": attr_macro_g, "type": "macro"}),
+            pd.DataFrame({"feature": fin_labels,   "saliency": attr_fin_g,   "type": "financial"}),
+            pd.DataFrame({"feature": macro_labels,  "saliency": attr_macro_g, "type": "macro"}),
         ]).sort_values("saliency", ascending=False)
 
         logger.log_table(df_global, ArtifactGroup.SALIENCY, f"global_features_{mode.value}")
 
         # Top-N bar chart
         df_top = df_global.head(top_n)
-        plt.figure(figsize=(10, max(6, top_n * 0.3)))
+        plt.figure(figsize=(10, 12))
         sns.barplot(
             data=df_top, x="saliency", y="feature", hue="type",
             palette={"financial": "#1f77b4", "macro": "#ff7f0e"}, dodge=False,
         )
         plt.title(f"Top {top_n} Feature Saliency ({mode.value}) – {logger.run_name}")
+        plt.tick_params(axis="y", labelsize=14)
+        plt.xlabel(plt.gca().get_xlabel(), fontsize=14)
+        plt.ylabel(plt.gca().get_ylabel(), fontsize=14)
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.SALIENCY, f"global_features_{mode.value}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.SALIENCY, f"global_features_{mode.value}")
 
         # ---- Sector exposure ----
         attr_macro_sample = attr_macro.abs().mean(dim=1).cpu().numpy()  # (N, M)
@@ -205,9 +219,7 @@ def compute_full_saliency(
             plt.title(f"{label.replace('15',' 15').title()} Macro-Exposed Sectors – {mode.value}")
             plt.tight_layout()
 
-            path = logger.plot_path(ArtifactGroup.SALIENCY, f"sector_exposure_{label}_{mode.value}")
-            plt.savefig(path); plt.close()
-            logger.log(path)
+            logger.log_figure(plt.gcf(), ArtifactGroup.SALIENCY, f"sector_exposure_{label}_{mode.value}")
 
         results[mode.value] = {"df_global": df_global, "df_sector": df_sector, "macro_ratio": macro_ratio}
 
@@ -241,7 +253,7 @@ def compute_full_saliency(
         )
         for sector, row in df_b.iterrows():
             ax.annotate(sector, (row["latent_exposure"], row["recon_exposure"]),
-                        fontsize=7, alpha=0.8, xytext=(4, 4), textcoords="offset points")
+                        fontsize=10, alpha=0.8, xytext=(4, 4), textcoords="offset points")
 
         ax.set_xlabel("Latent Macro Exposure")
         ax.set_ylabel("Reconstruction Macro Exposure")
@@ -251,9 +263,7 @@ def compute_full_saliency(
         )
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.SALIENCY, f"sector_bubble_{sort_label}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(fig, ArtifactGroup.SALIENCY, f"sector_bubble_{sort_label}")
 
     print(f"  Latent macro ratio:         {results['latent']['macro_ratio']:.4f}")
     print(f"  Reconstruction macro ratio: {results['reconstruction']['macro_ratio']:.4f}")

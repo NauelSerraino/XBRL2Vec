@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from services.config import SEQ_LEN
+from services.config import SEQ_LEN, TICKERS as _EXCLUDED_TICKERS
 
 
 # ---------------------------------------------------------------------------
@@ -47,9 +47,11 @@ class TrainConfig(BaseModel):
     epochs: int = 20
     batch_size: int = 32
     learning_rate: float = 1e-3
-    mask_prob: float = 0.2
     seed: int = 42
-    use_mask: bool = False
+    t_in: int = 12
+    t_out: int = 4
+    norm_mode: str = "per_ticker"
+    macro_weight_mode: str = "corr"  # "corr" | "ridge" | "xgboost"
 
     @classmethod
     def from_args(cls, args) -> "TrainConfig":
@@ -58,9 +60,11 @@ class TrainConfig(BaseModel):
             epochs=args.epochs,
             batch_size=args.batch_size,
             learning_rate=args.learning_rate,
-            mask_prob=args.mask_prob,
             seed=args.seed,
-            use_mask=bool(args.use_mask),
+            t_in=args.t_in,
+            t_out=args.t_out,
+            norm_mode=args.norm_mode,
+            macro_weight_mode=args.macro_weight_mode,
         )
 
 
@@ -127,29 +131,49 @@ def filter_columns(
     )
 
 
-def load_raw_data(in_dir: Path) -> tuple[pd.DataFrame, ...]:
-    """Load and pre-filter all raw parquet files. Returns (bs, is, cf, macro, metadata)."""
-    bs_df    = pd.read_parquet(in_dir / "bs_pct_train.parquet")
-    is_df    = pd.read_parquet(in_dir / "ins_pct_train.parquet")
-    cf_df    = pd.read_parquet(in_dir / "cf_pct_train.parquet")
-    macro_df = pd.read_parquet(in_dir / "exog.parquet").rename(columns={"observation_date": "quarter"})
-    metadata = pd.read_parquet(in_dir / "metadata.parquet")[["ticker", "sector"]].drop_duplicates()
+def load_raw_data(
+    preprocess_dir: Path,
+    meta_dir: Path,
+    norm_mode: str = "per_ticker",
+) -> tuple[pd.DataFrame, ...]:
+    """Load and pre-filter all raw parquet files. Returns (bs, is, cf, macro, metadata).
+
+    Args:
+        preprocess_dir: directory produced by preprocess.py (contains train/test parquets).
+        meta_dir: directory containing exog.parquet and metadata.parquet.
+        norm_mode: normalization mode used in preprocess.py (e.g. 'per_ticker', 'global').
+    """
+    bs_df    = pd.read_parquet(preprocess_dir / f"bs_{norm_mode}_train.parquet")
+    is_df    = pd.read_parquet(preprocess_dir / f"ins_{norm_mode}_train.parquet")
+    cf_df    = pd.read_parquet(preprocess_dir / f"cf_{norm_mode}_train.parquet")
+    macro_df = pd.read_parquet(meta_dir / "exog.parquet").rename(columns={"observation_date": "quarter"})
+    metadata = pd.read_parquet(meta_dir / "metadata.parquet")[["ticker", "sector"]].drop_duplicates()
 
     for df in [bs_df, is_df, cf_df, macro_df]:
         mask = df["quarter"].isin(_QUARTERS_TO_DELETE)
         df.drop(df[mask].index, inplace=True)
 
+    for df in [bs_df, is_df, cf_df]:
+        df.drop(df[df["ticker"].isin(_EXCLUDED_TICKERS)].index, inplace=True)
+
     return bs_df, is_df, cf_df, macro_df, metadata
 
 
-def load_test_data(in_dir: Path, macro_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_test_data(
+    preprocess_dir: Path,
+    macro_df: pd.DataFrame,
+    norm_mode: str = "per_ticker",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load test parquet files and apply same quarter filter."""
-    bs = pd.read_parquet(in_dir / "bs_pct_test.parquet")
-    is_ = pd.read_parquet(in_dir / "ins_pct_test.parquet")
-    cf = pd.read_parquet(in_dir / "cf_pct_test.parquet")
+    bs  = pd.read_parquet(preprocess_dir / f"bs_{norm_mode}_test.parquet")
+    is_ = pd.read_parquet(preprocess_dir / f"ins_{norm_mode}_test.parquet")
+    cf  = pd.read_parquet(preprocess_dir / f"cf_{norm_mode}_test.parquet")
 
     for df in [bs, is_, cf]:
         df.drop(df[df["quarter"].isin(_QUARTERS_TO_DELETE)].index, inplace=True)
+
+    for df in [bs, is_, cf]:
+        df.drop(df[df["ticker"].isin(_EXCLUDED_TICKERS)].index, inplace=True)
 
     bs, is_, cf, _ = filter_columns(bs, is_, cf, macro_df)
     return bs, is_, cf

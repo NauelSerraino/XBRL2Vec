@@ -4,6 +4,8 @@ Each function: builds figure → saves via ArtifactLogger → logs to MLflow.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pandas as pd
 import torch
@@ -18,6 +20,25 @@ import mlflow
 
 from mlflow_logging.artifacts import ArtifactGroup, ArtifactLogger
 from services.config import DEVICE
+
+
+# Key variables shown by default in the aggregate forecast plot.
+# Strip the suffix before display; only variables present in fin_cols are used.
+_DEFAULT_KEY_VARS = [
+    "Total Revenue_DIFF_Y",
+    "Net Income_DIFF_Y",
+    "Gross Profit_DIFF_Y",
+    "Operating Income_DIFF_Y",
+    "Operating Cash Flow_DIFF_Y",
+    "Total Assets_DIFF_Y",
+    # DIFF_Q variants (used when model is trained on quarterly diffs)
+    "Total Revenue_DIFF_Q",
+    "Net Income_DIFF_Q",
+    "Gross Profit_DIFF_Q",
+    "Operating Income_DIFF_Q",
+    "Operating Cash Flow_DIFF_Q",
+    "Total Assets_DIFF_Q",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +75,7 @@ def log_zero_sparsity(
     plt.xlim(0, 100)
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.DISTRIBUTION, "zero_sparsity")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, "zero_sparsity")
 
 
 def log_financial_boxplots(
@@ -79,9 +98,7 @@ def log_financial_boxplots(
         plt.grid(axis="x", alpha=0.3, linestyle="--")
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.DISTRIBUTION, f"financial_boxenplot_chunk_{i // chunk_size}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, f"financial_boxenplot_chunk_{i // chunk_size}")
 
 
 def log_macro_boxplots(
@@ -104,9 +121,7 @@ def log_macro_boxplots(
         plt.grid(axis="x", linestyle="--", alpha=0.3)
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.DISTRIBUTION, f"macro_boxenplot_chunk_{i // chunk_size}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, f"macro_boxenplot_chunk_{i // chunk_size}")
 
 
 def log_correlation_matrix(
@@ -135,9 +150,7 @@ def log_correlation_matrix(
     plt.title(f"Feature Correlation Matrix – {logger.run_name}")
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.DISTRIBUTION, "correlation_matrix")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.DISTRIBUTION, "correlation_matrix")
 
     return corr
 
@@ -154,7 +167,7 @@ def log_loss_comparison(
     print("[INFO] Loss comparison plot")
     epochs = [m.epoch + 1 for m in metrics_ctx]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
     for i, (attr, label) in enumerate([("mse", "MSE"), ("mae", "MAE"), ("smooth", "SmoothL1")]):
         axes[i].plot(epochs, [getattr(m, attr) for m in metrics_ctx],   label="Contextual")
         axes[i].plot(epochs, [getattr(m, attr) for m in metrics_blind], label="Blind")
@@ -166,9 +179,7 @@ def log_loss_comparison(
     plt.suptitle(f"Loss Comparison – {logger.run_name}")
     plt.tight_layout(rect=[0, 0, 1, 0.95])
 
-    path = logger.plot_path(ArtifactGroup.TRAINING, "loss_comparison")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(fig, ArtifactGroup.TRAINING, "loss_comparison")
 
 
 # ---------------------------------------------------------------------------
@@ -198,17 +209,26 @@ def log_importance_matrix(
         if vmin == vmax:
             vmax = vmin + 1e-8
 
+    col_labels = [c.replace("_DIFF_Y", "") for c in df.columns]
+    n_macro = 7
+
     plt.figure(figsize=(14, 10))
     im = plt.imshow(masked, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
     plt.colorbar(im, label="Δ MSE")
-    plt.xticks(range(len(df.columns)), df.columns, rotation=90)
-    plt.yticks(range(len(df.index)), df.index)
+    ax = plt.gca()
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=90)
+    row_labels = [r.replace("_DIFF_Y", "") for r in df.index]
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels)
+    # Bold the last n_macro x-tick labels (macro features)
+    for tick, label_text in zip(ax.get_xticklabels(), col_labels):
+        if col_labels.index(label_text) >= len(col_labels) - n_macro:
+            tick.set_fontweight("bold")
     plt.title(f"Importance Matrix ({label}) – {logger.run_name}")
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.IMPORTANCE, f"matrix_{label}")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.IMPORTANCE, f"matrix_{label}")
 
 
 def log_importance_summary(
@@ -232,14 +252,16 @@ def log_importance_summary(
     })
     logger.log_table(df_summary.reset_index(), ArtifactGroup.IMPORTANCE, "summary_contextual_vs_blind")
 
+    for model_label, col in [("contextual", "Contextual"), ("blind", "Blind")]:
+        mlflow.log_metric(f"importance_financial_{model_label}", float(df_summary.loc["financial", col]))
+        mlflow.log_metric(f"importance_macro_{model_label}",     float(df_summary.loc["macro",     col]))
+
     plt.figure(figsize=(6, 4))
     df_summary.plot.bar()
     plt.title(f"Importance Summary – {logger.run_name}")
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.IMPORTANCE, "summary_contextual_vs_blind")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.IMPORTANCE, "summary_contextual_vs_blind")
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +310,13 @@ def log_macro_embedding_tournament(
     df = pd.DataFrame(results)
     logger.log_table(df, ArtifactGroup.TOURNAMENT, "macro_embedding_tournament")
 
+    for row in df.itertuples():
+        label = row.Model.lower()
+        mlflow.log_metric(f"tournament_cosine_mean_{label}",    float(row.Cosine_Distance_mean))
+        mlflow.log_metric(f"tournament_cosine_std_{label}",     float(row.Cosine_Distance_std))
+        mlflow.log_metric(f"tournament_euclidean_mean_{label}", float(row.Euclidean_Distance_mean))
+        mlflow.log_metric(f"tournament_euclidean_std_{label}",  float(row.Euclidean_Distance_std))
+
     x = np.arange(len(df))
     for metric, col_mean, col_std, color, name in [
         ("Cosine",    "Cosine_Distance_mean",    "Cosine_Distance_std",    "#1f77b4", "cosine"),
@@ -301,9 +330,7 @@ def log_macro_embedding_tournament(
         plt.grid(axis="y", linestyle="--", alpha=0.3)
         plt.tight_layout()
 
-        path = logger.plot_path(ArtifactGroup.TOURNAMENT, f"macro_embedding_{name}")
-        plt.savefig(path); plt.close()
-        logger.log(path)
+        logger.log_figure(plt.gcf(), ArtifactGroup.TOURNAMENT, f"macro_embedding_{name}")
 
     return df
 
@@ -326,16 +353,20 @@ def log_macro_exposure_density(
         mlflow.log_metric(f"{metric}_{label}_std",  std_v)
         mlflow.log_metric(f"{metric}_{label}_cv",   std_v / (mean_v + 1e-9))
 
+    def _plot_series(arr, label):
+        if np.std(arr) < 1e-10:
+            plt.axvline(np.mean(arr), label=f"{label} (constant={np.mean(arr):.4f})", linewidth=2)
+        else:
+            pd.Series(arr).plot.kde(label=label, linewidth=2)
+
     plt.figure(figsize=(7, 4))
-    pd.Series(exposure_blind).plot.kde(label="Blind", linewidth=2)
-    pd.Series(exposure_contextual).plot.kde(label="Contextual", linewidth=2)
+    _plot_series(exposure_blind,      "Blind")
+    _plot_series(exposure_contextual, "Contextual")
     plt.title(f"Macro Exposure Density – {metric.upper()}")
     plt.xlabel("Exposure"); plt.ylabel("Density")
     plt.legend(); plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.TOURNAMENT, f"macro_exposure_density_{metric}")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.TOURNAMENT, f"macro_exposure_density_{metric}")
 
     return df
 
@@ -370,6 +401,9 @@ def log_company_distance_scatter(
     cos_corr, _ = spearmanr(cos_fin_flat, cos_lat_flat)
     euc_corr, _ = spearmanr(euc_fin_flat, euc_lat_flat)
 
+    mlflow.log_metric("spearman_cosine", float(cos_corr))
+    mlflow.log_metric("spearman_euclidean", float(euc_corr))
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     hb0 = axes[0].hexbin(cos_fin_flat, cos_lat_flat, gridsize=80, cmap="Blues", mincnt=1, bins="log")
     axes[0].set_xlabel("Cosine Similarity Financial")
@@ -384,9 +418,7 @@ def log_company_distance_scatter(
     plt.colorbar(hb1, ax=axes[1], label="log(Counts)")
 
     plt.tight_layout()
-    path = logger.plot_path(ArtifactGroup.EMBEDDING, "distance_scatter_cosine_euclidean")
-    plt.savefig(path); plt.close()
-    logger.log(path)
+    logger.log_figure(fig, ArtifactGroup.EMBEDDING, "distance_scatter_cosine_euclidean")
 
 
 def log_macro_sensitivity_barplot(
@@ -420,9 +452,7 @@ def log_macro_sensitivity_barplot(
     plt.gca().invert_yaxis()
     plt.tight_layout()
 
-    path = logger.plot_path(ArtifactGroup.EMBEDDING, "macro_sensitivity_barplot")
-    plt.savefig(path, dpi=150, bbox_inches="tight"); plt.close()
-    logger.log(path)
+    logger.log_figure(plt.gcf(), ArtifactGroup.EMBEDDING, "macro_sensitivity_barplot", save_kwargs={"dpi": 150, "bbox_inches": "tight"})
 
 
 def log_variance_analysis_plot(
@@ -431,3 +461,103 @@ def log_variance_analysis_plot(
 ) -> None:
     """Save the R² variance analysis table as CSV (plot is optional)."""
     logger.log_table(r2_df.reset_index(), ArtifactGroup.EMBEDDING, "variance_r2_analysis")
+
+
+# ---------------------------------------------------------------------------
+# FORECAST plots
+# ---------------------------------------------------------------------------
+
+def log_forecast_aggregate_plot(
+    timeseries_df: pd.DataFrame,
+    logger: ArtifactLogger,
+    key_vars: list[str] | None = None,
+    split_label: str = "",
+) -> None:
+    """
+    Aggregate (cross-sectional mean ± std) predicted vs actual for key variables.
+
+    Each quarter appears exactly once (walk-forward evaluation, one prediction
+    per company per quarter).  The full quarterly time series is shown, starting
+    from the earliest available forecast quarter (determined by T_in/T_out).
+
+    Parameters
+    ----------
+    timeseries_df : output of ``compute_forecast_timeseries``
+    key_vars      : fin_col names to plot; defaults to the most economically
+                    meaningful ones present in the data.
+    split_label   : 'in_sample' or 'oos' – used in title and artifact name.
+    """
+    print(f"[INFO] Forecast aggregate plot ({split_label})")
+
+    available_vars = timeseries_df["feature"].unique()
+    if key_vars is None:
+        key_vars = [v for v in _DEFAULT_KEY_VARS if v in available_vars]
+    else:
+        key_vars = [v for v in key_vars if v in available_vars]
+
+    if not key_vars:
+        print("[WARN] No matching key variables found; skipping forecast plot.")
+        return
+
+    df = timeseries_df.copy()
+
+    if df.empty:
+        print("[WARN] No forecast data available; skipping forecast plot.")
+        return
+
+    sorted_quarters = sorted(df["quarter"].unique())
+    tick_pos = list(range(0, len(sorted_quarters), 4))
+
+    n_vars = len(key_vars)
+    n_cols = 1
+    n_rows = n_vars
+
+    modes = [
+        ("mean_std",     "actual_mean",   "actual_std",    "predicted_mean",   "predicted_std",    "Mean ± Std"),
+        ("median_iqr",   "actual_median", "actual_halfiqr","predicted_median",  "predicted_halfiqr","Median ± Half-IQR"),
+    ]
+
+    lbl = f" ({split_label})" if split_label else ""
+    artifact_base = f"aggregate_timeseries_{split_label}" if split_label else "aggregate_timeseries"
+
+    for mode_key, act_center, act_spread, pred_center, pred_spread, mode_label in modes:
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(10, 4 * n_rows), squeeze=False)
+
+        for idx, var in enumerate(key_vars):
+            ax = axes[idx // n_cols][idx % n_cols]
+            var_df = (
+                df[df["feature"] == var]
+                .set_index("quarter")
+                .reindex(sorted_quarters)
+            )
+            x = range(len(var_df))
+
+            ac = var_df[act_center]
+            as_ = var_df[act_spread].fillna(0)
+            pc = var_df[pred_center]
+            ps = var_df[pred_spread].fillna(0)
+
+            ax.plot(x, ac, label="Actual",   color="#1f77b4", linewidth=1.8)
+            ax.fill_between(x, ac - as_, ac + as_, alpha=0.12, color="#1f77b4")
+            ax.plot(x, pc, label="Forecast", color="#ff7f0e", linewidth=1.8, linestyle="--")
+            ax.fill_between(x, pc - ps, pc + ps, alpha=0.12, color="#ff7f0e")
+
+            display_name = var.replace("_DIFF_Y", "").replace("_DIFF_Q", "")
+            ax.set_title(display_name, fontsize=10)
+            ax.legend(fontsize=7)
+            ax.grid(True, alpha=0.3, linestyle="--")
+            ax.axhline(0, color="gray", linewidth=0.5, linestyle=":")
+            ax.set_xticks(tick_pos)
+            ax.set_xticklabels([sorted_quarters[t] for t in tick_pos], rotation=45, fontsize=7)
+
+        for idx in range(n_vars, n_rows * n_cols):
+            axes[idx // n_cols][idx % n_cols].set_visible(False)
+
+        plt.suptitle(
+            f"Cross-sectional Forecast vs Actual – {mode_label}{lbl} – {logger.run_name}",
+            fontsize=11,
+        )
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        logger.log_figure(fig, ArtifactGroup.FORECAST, f"{artifact_base}_{mode_key}")
+
+    logger.log_table(df, ArtifactGroup.FORECAST, artifact_base)

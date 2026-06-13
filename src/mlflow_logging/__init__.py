@@ -12,6 +12,7 @@ from mlflow_logging.plots import (
     log_company_distance_scatter,
     log_macro_sensitivity_barplot,
     log_variance_analysis_plot,
+    log_forecast_aggregate_plot,
 )
 from mlflow_logging.saliency import (
     compute_saliency_per_company,
