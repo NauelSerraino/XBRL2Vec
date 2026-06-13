@@ -1,0 +1,1 @@
+{"columns":["index","latent","reconstruction"],"data":[["macro_r2",0.991,0.277],["financial_r2",0.724,0.719]]}

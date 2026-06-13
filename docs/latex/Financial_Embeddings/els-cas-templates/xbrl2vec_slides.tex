@@ -1,0 +1,313 @@
+\documentclass[aspectratio=169]{beamer}
+
+\usetheme{metropolis}
+\usepackage{appendixnumberbeamer}
+
+\usepackage{amsmath, amssymb}
+\usepackage{bm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+
+\definecolor{accent}{RGB}{0, 82, 136}
+\setbeamercolor{frametitle}{bg=accent}
+\setbeamercolor{progress bar}{fg=accent}
+\setbeamercolor{alerted text}{fg=accent}
+\metroset{block=fill, progressbar=frametitle}
+
+\title[XBRL2Vec]{\textbf{XBRL2Vec}\\[4pt]
+  \large Compact Embeddings for Company Fundamentals\\with Macroeconomic Context}
+\author{N.\ Serraino \and P.\ Zuccolotto \and A.\ Locoro}
+\institute{University of Brescia \quad$\cdot$\quad Intesa Sanpaolo}
+\date{}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{The Analogy: Word2Vec for Companies}
+
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{What Word2Vec did for words}
+      \begin{itemize}
+        \item Maps each word to a dense vector in a learned space
+        \item Similar words land close together: \textit{king} $\approx$ \textit{queen}
+        \item Enables arithmetic: $\vec{\text{king}} - \vec{\text{man}} + \vec{\text{woman}} \approx \vec{\text{queen}}$
+        \item One representation, many downstream tasks
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \textbf{What XBRL2Vec does for companies}
+      \begin{itemize}
+        \item Maps each company (at each quarter) to a dense vector in a learned space
+        \item Financially similar firms land close together
+        \item Captures both firm-level dynamics \emph{and} macro exposure
+        \item One representation: forecasting, peer selection, risk monitoring, stress testing
+      \end{itemize}
+    \end{column}
+  \end{columns}
+
+  \vspace{0.8em}
+  \begin{block}{The key difference from Word2Vec}
+    The embedding is not static — it is \emph{conditioned on the macroeconomic
+    environment}.  The same company encodes differently under different macro
+    regimes, capturing context that raw accounting figures cannot.
+  \end{block}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{The Problem: Financial Data Is Structured — and Context-Dependent}
+
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \textbf{What we have}
+      \begin{itemize}
+        \item Quarterly XBRL filings from SEC (balance sheet, income statement, cash flow)
+        \item Macroeconomic indicators (rates, inflation, GDP growth, \ldots)
+        \item A need to \emph{represent} companies, not just predict single numbers
+      \end{itemize}
+    \end{column}
+  \end{columns}
+
+  \vspace{1em}
+  \begin{block}{Core idea}
+    Learn a compact latent representation of each company's financial trajectory
+    that is \emph{conditioned on the macroeconomic environment} — useful for
+    both forecasting and downstream analytics.
+  \end{block}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Architecture at a Glance}
+
+  \begin{columns}[T]
+    \begin{column}{0.65\textwidth}
+      \begin{enumerate}
+        \item \textbf{DLinear Financial/Macro Encoder} — decomposes each accounting/macro item into trend + seasonal components and projects them to a fixed-size embedding $\mathbf{h}_{\mathrm{fin}} \in \mathbb{R}^{2F}$
+        \item \textbf{FiLM Conditioning} — macro embedding rescales and shifts
+          the financial embedding feature-wise:
+          \[
+            \mathbf{h}'_{\mathrm{fin}} = \bm{\gamma} \odot \mathbf{h}_{\mathrm{fin}} + \bm{\delta}
+          \]
+          where $\bm{\gamma}, \bm{\delta}$ are predicted from $\mathbf{h}_{\mathrm{mac}}$
+      \end{enumerate}
+      The conditioned embedding is then projected to a latent vector
+      $\mathbf{z}$, and a linear decoder reconstructs the financial forecast.
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \centering
+      \includegraphics[width=0.7\textwidth]{els-cas-templates/figs/full-architecture.png}\\
+      {\footnotesize \textit{End-to-end Architecture}}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Macro Personalisation: Not One-Size-Fits-All}
+
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      Different companies respond differently to the same macroeconomic shock
+      (a rate hike matters more to a bank than to a tech firm).
+
+      \vspace{0.8em}
+      Before feeding macro data to the encoder, we \textbf{re-weight each
+      macro indicator per company} using XGBoost feature importances trained
+      to predict the company's aggregate financial signal.
+
+      \vspace{0.8em}
+      This produces a personalised macro vector for each firm that reflects
+      its historical sensitivity to each macroeconomic driver.
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \begin{block}{In practice}
+        \begin{itemize}
+          \item $M = 7$ macro indicators (rates, inflation, GDP, \ldots)
+          \item One XGBoost model per company, fitted on training data
+          \item Importance weights applied before encoding
+        \end{itemize}
+      \end{block}
+      \vspace{0.5em}
+      \textit{Result: the macro signal reaching the FiLM layer already
+      encodes firm-level factor exposure.}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Does Macro Context Actually Help? — Forecasting Results}
+
+  \textbf{Setup:} 18-configuration grid (input window $\times$ forecast horizon $\times$ latent size).
+  Each run trains \textbf{XBRL2Vec} alongside a macro-blind ablation (same architecture, no macro).
+
+  \vspace{0.8em}
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Key finding}
+        The contextual model outperforms the blind baseline in \textbf{all 18
+        configurations} on out-of-sample MSE\@.  The improvement is
+        statistically significant ($p < 0.001$, Wilcoxon signed-rank test,
+        effect size $r = 1.0$).
+      \end{block}
+      \vspace{0.5em}
+
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \centering
+      \small
+      \begin{tabular}{lcc}
+        \toprule
+        \textbf{Model} & \textbf{OOS MSE (mean)} \\
+        \midrule
+        XBRL2Vec (contextual) & \textbf{0.0205} \\
+        XBRL2Vec-Blind        & 0.0210 \\
+        \midrule
+        \multicolumn{2}{l}{\textit{Macro exposure (Integrated Gradients):}} \\
+        Latent $\mathbf{z}$          & 42.8\% of attribution \\
+        Reconstruction $\hat{\mathbf{x}}$ & 11.3\% of attribution \\
+        \bottomrule
+      \end{tabular}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{What Drives the Latent Representation? — Feature Attribution}
+
+  Attribution scores via \textbf{Integrated Gradients} (target: latent norm
+  $\|\mathbf{z}\|_2$) show which inputs most shape the embedding.
+
+  \begin{center}
+    \includegraphics[width=0.72\textwidth]{els-cas-templates/figs/SALIENCY - global_features_latent_tin20-tout4-latent80.png}
+  \end{center}
+  {\footnotesize Top-20 features by global attribution.  Macro variables
+  consistently rank among the most influential inputs alongside core
+  financial items — confirming that the FiLM conditioning is actively used.}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Macro Exposure Is Heterogeneous Across Sectors}
+
+  Same model, different target: attribution towards reconstruction error
+  reveals \emph{which sectors rely most on macro signals}.
+
+  \begin{center}
+    \includegraphics[width=0.65\textwidth]{els-cas-templates/figs/SALIENCY - sector_bubble_reconstruction_tin20-tout4-latent80.png}
+  \end{center}
+  {\footnotesize Bubble size = number of companies.  Banks and federally
+  sponsored credit agencies show the highest macro sensitivity — recovered
+  \emph{without} any explicit sector label during training.}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Beyond Forecasting: Embedding-Based Peer Selection}
+
+  \begin{columns}[T]
+    \begin{column}{0.52\textwidth}
+      \centering
+      \includegraphics[width=\textwidth]{els-cas-templates/figs/n_corr.png}\\
+      {\footnotesize Mean Pearson $\rho$ of future 6-quarter trajectories for
+      $k{=}5$ neighbours selected by embedding similarity, raw financial
+      similarity, or at random.  The embedding advantage is consistent
+      across all evaluation quarters.}
+    \end{column}
+    \begin{column}{0.45\textwidth}
+      \vspace{1.5em}
+      \small
+      \begin{tabular}{lcc}
+        \toprule
+        \textbf{Criterion} & \textbf{Mean} $\rho$ & \textbf{Median} $\rho$ \\
+        \midrule
+        Embedding & \textbf{0.244} & \textbf{0.293} \\
+        Financial & 0.187 & 0.204 \\
+        Random    & 0.029 & 0.038 \\
+        \bottomrule
+      \end{tabular}
+      \vspace{1em}
+
+      \normalsize
+      \begin{block}{Takeaway}
+        Embedding neighbours show \textbf{30\% higher future co-movement}
+        than accounting-space neighbours.  The latent space encodes
+        forward-looking financial structure not visible in the raw filings.
+      \end{block}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Potential Applications}
+
+  \begin{columns}[T]
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Credit risk monitoring}
+        Track shifts in a company's latent position over time.
+        Drift towards distressed clusters can serve as an early-warning signal.
+      \end{block}
+      \vspace{0.5em}
+      \begin{block}{Portfolio construction}
+        Use embedding-space similarity as an economically grounded alternative
+        to raw accounting ratios for peer grouping and diversification.
+      \end{block}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{block}{Macro stress testing}
+        Inject hypothetical macro vectors through the FiLM conditioner and
+        observe how company embeddings shift — without retraining.
+      \end{block}
+      \vspace{0.5em}
+      \begin{block}{Regime detection}
+        Monitor cross-sectional shifts in the latent distribution as a
+        market-level diagnostic for structural economic changes.
+      \end{block}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{frame}{Summary}
+
+  \begin{columns}[T]
+    \begin{column}{0.55\textwidth}
+      \textbf{What XBRL2Vec delivers:}
+      \begin{itemize}
+        \item A compact, macro-conditioned embedding of company fundamentals
+          built entirely on open, standardised XBRL filings
+        \item Improved out-of-sample forecasting across all tested configurations
+        \item A latent space that is geometrically faithful, economically
+          interpretable, and analytically reusable
+        \item Firm-level macro exposure estimates without explicit sector labels
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.42\textwidth}
+      \textbf{Next steps:}
+      \begin{itemize}
+        \item Richer macro feature set (credit spreads, sector indices)
+        \item Feature-level macro weighting ($M \times F$ importance matrix)
+        \item Extension to private companies and non-US jurisdictions
+        \item Integration with downstream risk and valuation workflows
+      \end{itemize}
+      \vspace{1em}
+      \begin{block}{}
+        \centering Code and data pipeline will be released open-source.
+      \end{block}
+    \end{column}
+  \end{columns}
+
+\end{frame}
+
+\end{document}
