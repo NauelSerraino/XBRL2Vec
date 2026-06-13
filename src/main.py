@@ -169,6 +169,8 @@ def run_experiment(
         mlflow.log_params(config.model_dump())
         mlflow.log_param("latent_dim", latent_dim)
         mlflow.log_param("norm_mode", config.norm_mode)
+        mlflow.log_param("n_companies_train", train_ds.X_fin.shape[0])
+        mlflow.log_param("n_companies_test",  test_ds.X_fin.shape[0])
 
         # ----------------------------------------------------------------
         # 1. Distribution diagnostics  (last window, one row per company)

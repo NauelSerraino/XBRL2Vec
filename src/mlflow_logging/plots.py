@@ -167,7 +167,7 @@ def log_loss_comparison(
     print("[INFO] Loss comparison plot")
     epochs = [m.epoch + 1 for m in metrics_ctx]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
     for i, (attr, label) in enumerate([("mse", "MSE"), ("mae", "MAE"), ("smooth", "SmoothL1")]):
         axes[i].plot(epochs, [getattr(m, attr) for m in metrics_ctx],   label="Contextual")
         axes[i].plot(epochs, [getattr(m, attr) for m in metrics_blind], label="Blind")
@@ -209,11 +209,22 @@ def log_importance_matrix(
         if vmin == vmax:
             vmax = vmin + 1e-8
 
+    col_labels = [c.replace("_DIFF_Y", "") for c in df.columns]
+    n_macro = 7
+
     plt.figure(figsize=(14, 10))
     im = plt.imshow(masked, aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
     plt.colorbar(im, label="Δ MSE")
-    plt.xticks(range(len(df.columns)), df.columns, rotation=90)
-    plt.yticks(range(len(df.index)), df.index)
+    ax = plt.gca()
+    ax.set_xticks(range(len(col_labels)))
+    ax.set_xticklabels(col_labels, rotation=90)
+    row_labels = [r.replace("_DIFF_Y", "") for r in df.index]
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_yticklabels(row_labels)
+    # Bold the last n_macro x-tick labels (macro features)
+    for tick, label_text in zip(ax.get_xticklabels(), col_labels):
+        if col_labels.index(label_text) >= len(col_labels) - n_macro:
+            tick.set_fontweight("bold")
     plt.title(f"Importance Matrix ({label}) – {logger.run_name}")
     plt.tight_layout()
 
@@ -240,6 +251,10 @@ def log_importance_summary(
         "Blind":      _summarize(imp_blind),
     })
     logger.log_table(df_summary.reset_index(), ArtifactGroup.IMPORTANCE, "summary_contextual_vs_blind")
+
+    for model_label, col in [("contextual", "Contextual"), ("blind", "Blind")]:
+        mlflow.log_metric(f"importance_financial_{model_label}", float(df_summary.loc["financial", col]))
+        mlflow.log_metric(f"importance_macro_{model_label}",     float(df_summary.loc["macro",     col]))
 
     plt.figure(figsize=(6, 4))
     df_summary.plot.bar()
@@ -294,6 +309,13 @@ def log_macro_embedding_tournament(
 
     df = pd.DataFrame(results)
     logger.log_table(df, ArtifactGroup.TOURNAMENT, "macro_embedding_tournament")
+
+    for row in df.itertuples():
+        label = row.Model.lower()
+        mlflow.log_metric(f"tournament_cosine_mean_{label}",    float(row.Cosine_Distance_mean))
+        mlflow.log_metric(f"tournament_cosine_std_{label}",     float(row.Cosine_Distance_std))
+        mlflow.log_metric(f"tournament_euclidean_mean_{label}", float(row.Euclidean_Distance_mean))
+        mlflow.log_metric(f"tournament_euclidean_std_{label}",  float(row.Euclidean_Distance_std))
 
     x = np.arange(len(df))
     for metric, col_mean, col_std, color, name in [
@@ -378,6 +400,9 @@ def log_company_distance_scatter(
 
     cos_corr, _ = spearmanr(cos_fin_flat, cos_lat_flat)
     euc_corr, _ = spearmanr(euc_fin_flat, euc_lat_flat)
+
+    mlflow.log_metric("spearman_cosine", float(cos_corr))
+    mlflow.log_metric("spearman_euclidean", float(euc_corr))
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     hb0 = axes[0].hexbin(cos_fin_flat, cos_lat_flat, gridsize=80, cmap="Blues", mincnt=1, bins="log")
@@ -484,8 +509,8 @@ def log_forecast_aggregate_plot(
     tick_pos = list(range(0, len(sorted_quarters), 4))
 
     n_vars = len(key_vars)
-    n_cols = min(3, n_vars)
-    n_rows = math.ceil(n_vars / n_cols)
+    n_cols = 1
+    n_rows = n_vars
 
     modes = [
         ("mean_std",     "actual_mean",   "actual_std",    "predicted_mean",   "predicted_std",    "Mean ± Std"),
@@ -496,7 +521,7 @@ def log_forecast_aggregate_plot(
     artifact_base = f"aggregate_timeseries_{split_label}" if split_label else "aggregate_timeseries"
 
     for mode_key, act_center, act_spread, pred_center, pred_spread, mode_label in modes:
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4 * n_rows), squeeze=False)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(10, 4 * n_rows), squeeze=False)
 
         for idx, var in enumerate(key_vars):
             ax = axes[idx // n_cols][idx % n_cols]
