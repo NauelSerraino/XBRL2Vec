@@ -1,17 +1,17 @@
-# ml-project/MLproject
-
-name: FAE_Hybrid_Forecasting
+name: XBRL2Vec
 
 conda_env: python_env.yaml
 
 entry_points:
   main:
     parameters:
-      # Key parameters for reproducibility and model selection
-      model_name: {type: str, default: "Euclidean FAE", description: "Which FAE variant to run"}
-      latent_dim: {type: int, default: 150}
-      epochs: {type: int, default: 10}
-      batch_size: {type: int, default: 32}
-      learning_rate: {type: float, default: 0.001}
-      lambda_ortho: {type: float, default: 0.0001, description: "Only used by Hyperbolic FAE"}
-    command: "python src/main.py --model_name {model_name} --latent_dim {latent_dim} --epochs {epochs} --batch_size {batch_size} --learning_rate {learning_rate} --lambda_ortho {lambda_ortho}"
+      latent_factors:      {type: str,   default: "0.5 1 2",    description: "Space-separated list of latent size factors (multiplied by F)"}
+      epochs:              {type: int,   default: 20}
+      batch_size:          {type: int,   default: 32}
+      learning_rate:       {type: float, default: 0.001}
+      seed:                {type: int,   default: 42}
+      t_in:                {type: str,   default: "12 16 20",   description: "Space-separated list of input window lengths"}
+      t_out:               {type: str,   default: "1 4",        description: "Space-separated list of forecast horizons"}
+      norm_mode:           {type: str,   default: "global",     description: "global or per_ticker"}
+      macro_weight_mode:   {type: str,   default: "xgboost",   description: "corr, ridge, or xgboost"}
+    command: "python src/main.py --latent_factors {latent_factors} --epochs {epochs} --batch_size {batch_size} --learning_rate {learning_rate} --seed {seed} --t_in {t_in} --t_out {t_out} --norm_mode {norm_mode} --macro_weight_mode {macro_weight_mode}"
