@@ -167,9 +167,11 @@ def preprocess_dataset(
     df: pd.DataFrame,
     out_dir: str,
     norm_mode: str,
+    allow_missing: bool = False,
 ) -> None:
     """
     `df` is already reshaped (melt_pivot) and filtered to the common ticker set.
+    allow_missing: keep NaN (no forward-fill, no row dropping); the scalers ignore NaN when fitting.
     """
     print(f"\n── {name.upper()} ──")
 
@@ -179,8 +181,9 @@ def preprocess_dataset(
     # Step 2: add diffs
     df = create_diffs(df)
 
-    # Step 3: resolve NaNs from diffs BEFORE any scaler
-    df = handle_nans(df)
+    # Step 3: resolve NaNs from diffs BEFORE any scaler (kept as NaN with allow_missing)
+    if not allow_missing:
+        df = handle_nans(df)
     print(f"    rows: {len(df)}, tickers: {df['ticker'].nunique()}")
 
     # Step 4: company-based split (full time series per company, seed=SEED)
@@ -215,8 +218,13 @@ def preprocess_dataset(
     print(f"    saved {name}_{norm_mode}_train.parquet and {name}_{norm_mode}_test.parquet")
 
 
-def main(out_dir: str, norm_mode: str) -> None:
-    print(f"Settings: test_ratio={TEST_RATIO}, seed={SEED}, norm_mode={norm_mode}")
+def main(out_dir: str, norm_mode: str, allow_missing: bool = False) -> None:
+    """
+    allow_missing=False (default): only tickers complete in every dataset are kept (the original rule).
+    allow_missing=True: every ticker present in all datasets is kept, NaN included (panels with missing values, e.g.
+    the filled/ panel of src/preprocess/build_panels.py).
+    """
+    print(f"Settings: test_ratio={TEST_RATIO}, seed={SEED}, norm_mode={norm_mode}, allow_missing={allow_missing}")
 
     raw_paths = {
         "bs":  os.path.join(out_dir, "bs-raw.parquet"),
@@ -233,7 +241,7 @@ def main(out_dir: str, norm_mode: str) -> None:
             continue
         df = melt_pivot(pd.read_parquet(raw_path))
         dfs[name] = df
-        complete_per_dataset[name] = get_complete_tickers(df)
+        complete_per_dataset[name] = set(df["ticker"]) if allow_missing else get_complete_tickers(df)
 
     if not dfs:
         print("No datasets found. Done.")
@@ -253,7 +261,7 @@ def main(out_dir: str, norm_mode: str) -> None:
         dropped = before - df["ticker"].nunique()
         if dropped:
             print(f"  {name}: dropped {dropped} tickers not in common set")
-        preprocess_dataset(name, df, out_dir, norm_mode)
+        preprocess_dataset(name, df, out_dir, norm_mode, allow_missing)
 
     print("\nDone.")
 
@@ -274,5 +282,10 @@ if __name__ == "__main__":
             "global: one scaler across all companies (preserves cross-company scale)."
         ),
     )
+    parser.add_argument(
+        "--allow_missing",
+        action="store_true",
+        help="Keep tickers with missing values (no completeness filter, no forward-fill); for gap-filled panels.",
+    )
     args = parser.parse_args()
-    main(args.out_dir, args.norm_mode)
+    main(args.out_dir, args.norm_mode, args.allow_missing)

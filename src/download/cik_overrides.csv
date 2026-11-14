@@ -1,0 +1,8 @@
+# Tickers downloaded under another CIK than SEC's current ticker list gives (see install_cik_overrides).
+ticker,cik,name,reason
+XOM,34088,EXXON MOBIL CORP,"2026 reorganisation: SEC's list maps XOM to ExxonMobil Holdings Corp (CIK 2115436, filings from 2026); the history is under Exxon Mobil Corp"
+CLBK,1723596,"Columbia Financial, Inc.","2026 holding reorganisation: new CIK 2115119 (Columbia Financial, Inc./MD/)"
+XPRO,1575828,EXPRO GROUP HOLDINGS N.V.,"redomiciled: new CIK 2126198 (Expro Ltd)"
+NVRI,45876,ENVIRI LLC (formerly Harsco),"holding reorganisation: new CIK 2104052 (Enviri Corp)"
+CBAT,1117171,"CBAK Energy Technology, Inc.","redomiciled: new CIK 2086841 (CBAK Energy Technology Ltd)"
+DMRC,1438231,Old Digimarc CORP,"holding reorganisation: new CIK 2119322 (Digimarc Corp)"

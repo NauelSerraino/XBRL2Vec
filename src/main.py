@@ -131,7 +131,28 @@ def parse_args():
         default="xgboost",
         help="Method to weight macro variables per company: corr (Pearson), ridge (Ridge betas), xgboost (sign-corrected importances).",
     )
+    parser.add_argument(
+        "--panel",
+        choices=["filled", "complete"],
+        default="filled",
+        help="Which panel of src/main_download.py to train on (see <panels_dir>/README.md).",
+    )
+    parser.add_argument("--mlflow_uri", default="http://localhost:5000", help="MLflow tracking URI (or a file:// folder).")
+    parser.add_argument(
+        "--panels_dir",
+        type=Path,
+        default=None,
+        help="Panels folder written by src/main_download.py (default: the latest data/in/panels_*).",
+    )
     return parser.parse_args()
+
+
+def latest_panels_dir(data_dir: Path) -> Path:
+    """The newest data/in/panels_* folder that holds exog.parquet (written by src/main_download.py)."""
+    dirs = sorted(p for p in (data_dir / "in").glob("panels_*") if (p / "exog.parquet").exists())
+    if not dirs:
+        raise SystemExit(f"no panels with exog.parquet under {data_dir / 'in'}: run src/main_download.py first")
+    return dirs[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +346,9 @@ def main() -> None:
     seed_everything(args.seed)
 
     BASE_DIR       = Path("/home/nauel/vscode/XBRL2Vec/data")
-    META_DIR       = BASE_DIR / "in"
-    PREPROCESS_DIR = BASE_DIR / "out" / "preprocess"
+    META_DIR       = args.panels_dir or latest_panels_dir(BASE_DIR)     # exog.parquet, metadata.parquet
+    PREPROCESS_DIR = META_DIR / args.panel                             # train/test parquets of preprocess.py
+    print(f"[INFO] Data: {PREPROCESS_DIR}")
 
     # ---- Load & transform train data ----
     print("[INFO] Loading train data")
@@ -346,7 +368,7 @@ def main() -> None:
     test_ds     = transform_dataset(raw_test_ds, macro_weight_mode=args.macro_weight_mode)
 
     # ---- MLflow setup ----
-    mlflow.set_tracking_uri("http://localhost:5000")
+    mlflow.set_tracking_uri(args.mlflow_uri)
     mlflow.set_experiment("Forecaster_vs_Blind_Comparison")
 
     # ---- Experiment loop (Cartesian product: t_in × t_out × latent_factors) ----

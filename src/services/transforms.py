@@ -104,19 +104,27 @@ def _weights_xgboost(X_fin: torch.Tensor, X_macro: torch.Tensor) -> torch.Tensor
     return torch.stack(weights)  # [N, M]
 
 
+def _weights_none(X_fin: torch.Tensor, X_macro: torch.Tensor) -> torch.Tensor:
+    """No firm-specific weighting: every firm gets the same macro series (weights 1). Returns [N, M]."""
+    return torch.ones(X_fin.shape[0], X_macro.shape[-1])
+
+
 _WEIGHT_FNS = {
     "corr":    _weights_corr,
     "ridge":   _weights_ridge,
     "xgboost": _weights_xgboost,
+    "none":    _weights_none,
 }
 
 
-def transform_dataset(dataset: AlignedDataset, macro_weight_mode: str = "corr") -> AlignedDataset:
+def transform_dataset(dataset: AlignedDataset, macro_weight_mode: str = "corr", fin_slog: bool = True) -> AlignedDataset:
     """
     Apply symmetric log + macro weighting.
     Returns a new AlignedDataset with transformed tensors.
 
-    macro_weight_mode: "corr" | "ridge" | "xgboost"
+    macro_weight_mode: "corr" | "ridge" | "xgboost" | "none" (the raw macro, the same for every firm)
+    fin_slog: False returns X_fin as it is (inputs already scaled: the fingerprint); the macro and its weights are
+    computed as before
     """
     if macro_weight_mode not in _WEIGHT_FNS:
         raise ValueError(f"Unknown macro_weight_mode '{macro_weight_mode}'. Choose from {list(_WEIGHT_FNS)}")
@@ -129,7 +137,7 @@ def transform_dataset(dataset: AlignedDataset, macro_weight_mode: str = "corr") 
     X_macro = X_macro * weights.unsqueeze(1)  # [N, T, M]
 
     return AlignedDataset(
-        X_fin      = X_fin,
+        X_fin      = X_fin if fin_slog else dataset.X_fin,
         X_macro    = X_macro,
         Y_fin      = dataset.Y_fin,
         meta_df    = dataset.meta_df,

@@ -1,0 +1,33 @@
+index,mean,min,max,statement
+Research And Development,0.008292333,0.005999189,0.013029914,income statement
+Net PPE,0.008987843,0.007102923,0.012398106,balance sheet
+Goodwill,0.010076633,0.0080645075,0.014206831,balance sheet
+Inventory,0.011893106,0.010105612,0.015684882,balance sheet
+Stockholders Equity,0.012715561,0.011348841,0.014428414,balance sheet
+Current Assets,0.013579279,0.011420835,0.016350372,balance sheet
+Retained Earnings,0.013649695,0.0106636295,0.018134767,balance sheet
+Investments And Advances,0.0145213455,0.01317462,0.015962018,balance sheet
+Operating Income,0.014651174,0.012306901,0.01701736,income statement
+Total Non Current Liabilities Net Minority Interest,0.015633974,0.013040225,0.018818136,balance sheet
+Accounts Payable,0.016191158,0.014786276,0.019257627,balance sheet
+Depreciation And Amortization,0.017114509,0.014380342,0.02046631,cash flow
+Pretax Income,0.018059447,0.017071083,0.019228978,income statement
+Capital Stock,0.01857869,0.013532343,0.025901297,balance sheet
+Selling General And Administration,0.019022498,0.017209586,0.020803,income statement
+Long Term Debt,0.019042727,0.01624098,0.021557929,balance sheet
+Current Liabilities,0.01937845,0.01770701,0.020374583,balance sheet
+Net Income,0.019724164,0.016932819,0.022560352,income statement
+Other Short Term Investments,0.019725924,0.017507154,0.022345603,balance sheet
+Other Current Assets,0.020124387,0.017230261,0.022737298,balance sheet
+Receivables,0.02063775,0.01693831,0.022997377,balance sheet
+End Cash Position,0.021615438,0.019250931,0.023658095,cash flow
+Other Non Operating Income Expense,0.025524428,0.024564842,0.026946014,income statement
+Other Current Liabilities,0.0259076,0.022442305,0.030288333,balance sheet
+Cost Of Revenue,0.029224236,0.027510045,0.031905636,income statement
+Operating Cash Flow,0.029910672,0.026154488,0.034952343,cash flow
+Interest Expense,0.030494899,0.028771922,0.032401357,income statement
+Other Operating Income Expense,0.032909803,0.031455327,0.034956433,income statement
+Financing Cash Flow,0.040221922,0.03583652,0.043863498,cash flow
+Current Debt,0.041856084,0.035400618,0.046317678,balance sheet
+Investing Cash Flow,0.04231076,0.039829995,0.04377052,cash flow
+Tax Provision,0.04366205,0.039923977,0.04623114,income statement

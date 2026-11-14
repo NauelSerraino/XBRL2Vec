@@ -1,0 +1,11 @@
+[INFO] Macro weighting: corr
+[INFO] Macro weighting: corr
+[INFO] filled t_in 12 cutoff 2022Q4: 86,715 windows, focal out of time 21,576, unseen firms, out of time 3,804, unseen firms 9,193
+[INFO] 01_map_sectors
+[INFO] 02_map_size_growth
+[INFO] 03_importance_items
+[INFO] 04_importance_sectors
+[INFO] 05_pair_reasons
+[INFO] 06_components
+[INFO] 07_concepts
+[INFO] 08_firm_changes
