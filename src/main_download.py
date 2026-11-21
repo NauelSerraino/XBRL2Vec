@@ -1,11 +1,13 @@
 """
-Data pipeline before modelling: download, metadata, panel, preprocessing. Step 5, the fingerprint, is run separately
-(see docs/code_walkthrough.md).
+Step 1 of 3 (src/main.py): the data, from the download to the model's sample.
 
   1. finqual download of every company in SEC's current ticker list   src/download/download_finqual.py
   2. SEC metadata (fiscal-year end, SIC code)                          src/download/sec_metadata.py
   3. the panel with its gaps filled, filled/                           src/preprocess/build_panels.py
   4. scaled amounts and their changes, split into two halves of firms  src/preprocess/preprocess.py
+  5. the fingerprint of every firm, the balanced firms (a complete     src/preprocess/fingerprint.py,
+     window at every quarter; 15 % unseen) and the fingerprint scaled  services/data.py (universe, balanced_firms)
+     on them, in filled/targets/
 
     # tonight: everything, into data/in/download_<today>/ and data/in/panels_<today>/ (resumable: just re-run)
     xbrl2vec/bin/python src/main_download.py --user_agent "Name Surname name@example.org"
@@ -13,11 +15,11 @@ Data pipeline before modelling: download, metadata, panel, preprocessing. Step 5
     # smoke test on 5 companies, into a scratch folder
     xbrl2vec/bin/python src/main_download.py --limit 5 --download_dir /tmp/dl_test
 
-    # steps 2-4 on an existing download
-    xbrl2vec/bin/python src/main_download.py --download_dir data/in/download_2025-11-10 --skip_download
+    # steps 2-5 on an existing download
+    xbrl2vec/bin/python src/main_download.py --download_dir data/in/download_2026-10-25 --skip_download
 
 Steps 1-2 run with a Python that has finqual (default: the venv of the finqual fork, override with --finqual_python
-or FINQUAL_PYTHON); steps 3-4 with the Python running this script. Each step's output is written to its folder;
+or FINQUAL_PYTHON); steps 3-5 with the Python running this script. Each step's output is written to its folder;
 logs go to <download_dir>/pipeline.log. Stop with Ctrl-C at any time: re-running resumes the download where it
 stopped.
 """
@@ -30,6 +32,8 @@ import sys
 import time
 from datetime import date
 from pathlib import Path
+
+from services.data import T_IN, balanced_firms, universe
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FINQUAL_PYTHON = Path.home() / "vscode" / "finqual" / "finqual-venv" / "bin" / "python"
@@ -70,8 +74,19 @@ def run_parallel(cmds: list[list], d: Path, log: Path) -> None:
         raise SystemExit(f"download workers failed (exit codes {codes}); see {d}/worker*.out")
 
 
+def sample(panel: Path, log: Path) -> None:
+    """Step 5: the fingerprint of every firm, the balanced firms and their split, the fingerprint scaled on them."""
+    fingerprint = ROOT / "src" / "preprocess" / "fingerprint.py"
+    run([sys.executable, fingerprint, "--panel", panel], log)
+    firms = panel / "targets" / "firms_balanced.parquet"
+    b = balanced_firms(universe(panel, T_IN))
+    b.to_parquet(firms)
+    print(f"balanced firms: {len(b):,} ({(b.split == 'unseen').sum():,} unseen) -> {firms}", flush=True)
+    run([sys.executable, fingerprint, "--panel", panel, "--firms", firms], log)
+
+
 def main() -> None:
-    """Parse the options and run steps 1-4 in order, each skippable."""
+    """Parse the options and run steps 1-5 in order, each skippable."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--download_dir", type=Path, default=ROOT / "data" / "in" / f"download_{date.today().isoformat()}")
     p.add_argument("--panels_dir", type=Path, default=None, help="Default: <download_dir with download_ -> panels_>.")
@@ -87,7 +102,7 @@ def main() -> None:
                    help="Parallel download workers (each ~12 s a company and one core; with 4, roughly 6 h for ~7,000 companies).")
     p.add_argument("--skip_download", action="store_true")
     p.add_argument("--skip_metadata", action="store_true")
-    p.add_argument("--skip_preprocess", action="store_true")
+    p.add_argument("--skip_preprocess", action="store_true", help="Skip steps 4-5.")
     args = p.parse_args()
 
     d = args.download_dir.resolve()
@@ -118,6 +133,7 @@ def main() -> None:
     run(cmd, log)
     if not args.skip_preprocess:
         run([sys.executable, ROOT / "src" / "preprocess" / "preprocess.py", "--out_dir", panels / "filled"], log)
+        sample(panels / "filled", log)
     print(f"\nDone. Download: {d}\nPanel: {panels / 'filled'} (README.md and report.json in {panels})")
 
 

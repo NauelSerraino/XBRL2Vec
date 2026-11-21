@@ -21,7 +21,7 @@ without any ratio, get no fingerprint.
 
 Output: <panel>/targets/fingerprint_slogz.parquet, columns ticker, quarter and one per ratio. With --firms (a parquet
 with a ticker column): the fingerprint of those firms only, scaled on them, in fingerprint_slogz_balanced.parquet (the
-model's sample, see main_similarity.py).
+model's sample; both runs are step 5 of src/main_download.py).
 """
 from __future__ import annotations
 

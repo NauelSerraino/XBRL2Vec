@@ -15,7 +15,7 @@ Missing values stay missing. Only firms present in all three statements are kept
 Output, in --out_dir: {bs,ins,cf}_global_{train,test}.parquet.
 
 What the model uses of this: only which firm-quarters have complete windows in these amounts and their yearly changes
-(main_similarity.universe). The model's own split of the firms (main_similarity.balanced_firms) replaces this one, and
+(services/data.universe). The model's own split of the firms (services/data.balanced_firms) replaces this one, and
 its inputs are the fingerprint (src/preprocess/fingerprint.py), not these scaled amounts.
 """
 from __future__ import annotations

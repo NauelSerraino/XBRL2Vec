@@ -1,8 +1,13 @@
 """
-Score embeddings on tasks they were never trained on (docs/usefulness_protocol.md). A "vector" is anything that gives
-one row of numbers per window: a run's embeddings, or a baseline (the raw fingerprint, a PCA).
+Step 3 of 3 (src/main.py): score embeddings on tasks they were never trained on (docs/usefulness_protocol.md), then
+the evaluation battery. A "vector" is anything that gives one row of numbers per window: a run's embeddings, or a
+baseline (the raw fingerprint, a PCA).
 
-    cd src && ../xbrl2vec/bin/python usefulness_eval.py <run> [<run> ...] [--force]
+    xbrl2vec/bin/python src/usefulness_eval.py                 # every run of main_similarity.VARIANTS, then the battery
+    xbrl2vec/bin/python src/usefulness_eval.py <run> [--force]  # only these runs, no battery
+
+The battery (BATTERY, model-evaluation/): the interpretability figures, ablation.xlsx, comparison.xlsx and
+robustness.xlsx, each in its folder's out/.
 
 For every quarter, the pool is all firms of that quarter (2,115) and the focal firms are those of the evaluation set:
   unseen firms                the 317 unseen firms, quarters up to the cutoff (2015Q4-2022Q4)
@@ -28,13 +33,14 @@ percentiles of each quarter.
 
 Output: <run>/usefulness.csv (one row per set, task, quantity and quarter; q "all" is the mean over the quarters) and
 data/out/usefulness/baselines_<key>.csv for the baselines and the SIC2 benchmark, computed once per data key.
-The second half of the module (runs_of, cells_of, the neighbour helpers) serves the scripts of model-evaluation/.
+The second half of the module (runs_of, cells_of, the neighbour helpers) serves the battery's scripts.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -47,10 +53,13 @@ from sklearn.linear_model import RidgeCV
 
 import main_similarity as ms
 from models.xbrl2vec import XBRL2VecEncoder, embed
+from services.data import LAST_QUARTER
 from services.similarity import attach_window_deltas
 
-RUNS = ms.DATA / "out" / "similarity"
+RUNS = ms.RUNS
 OUT = ms.DATA / "out" / "usefulness"
+BATTERY = [ms.DATA.parent / "model-evaluation" / s for s in ("interpretabilty/interpretability_figures.py",
+           "downstream-tasks/ablation.py", "downstream-tasks/comparison.py", "robustness/robustness.py")]
 GOOD_CELLS = [1, 2, 4, 6, 7]          # observed, identity, fiscal-year-end redistribution, recomputed, confirmed zero
 K_NN, MIN_PEERS, MASK_SHARE = 10, 3, 0.2
 QUANTITIES = ["size", "revenue growth", "asset growth", "share issuance"]
@@ -89,7 +98,7 @@ def winsorize(df: pd.DataFrame) -> pd.DataFrame:
 
 def quantities(panel: Path) -> pd.DataFrame:
     """(ticker, quarter) x the quantities of the module docstring."""
-    L = {k: v.loc[:, v.columns <= ms.LAST_QUARTER] for k, v in load_lines(panel).items()}   # "next year" too
+    L = {k: v.loc[:, v.columns <= LAST_QUARTER] for k, v in load_lines(panel).items()}   # "next year" too
     quarters = list(L["Total Assets"].columns)
     mask = pd.read_parquet(panel / "mask.parquet")                     # how each cell of the panel was obtained
 
@@ -162,10 +171,6 @@ class Group:
         self.pca32 = PCA(32, random_state=0).fit(self.both(self.FP[tr], self.D[tr]))
         print(f"[INFO] {self.panel} t_in {self.t_in} cutoff {self.cutoff}: {len(self.meta):,} windows, "
               f"focal " + ", ".join(f"{s} {f.sum():,}" for s, f in self.focal.items()), flush=True)
-
-    def key(self) -> str:
-        """The data key that names the baselines file: panels folder, t_in, cutoff."""
-        return f"{self.panels_dir.name}_tin{self.t_in}_{self.cutoff}"
 
     def both(self, FP: np.ndarray, D: np.ndarray) -> np.ndarray:
         """[fingerprint, window deltas] side by side, each block divided by its total standard deviation (PCA-32's input)."""
@@ -354,25 +359,31 @@ def sic_rows(g: Group, labels: np.ndarray | None = None, name: str = "SIC2") -> 
     return _mean_rows(acc, name)
 
 
+def baselines_file(run: str) -> Path:
+    """The scores of the baselines and SIC2 on `run`'s data: one file per panels folder, t_in and cutoff."""
+    c = json.loads((RUNS / run / "config.json").read_text())
+    return OUT / f"baselines_{Path(c['panels_dir']).name}_tin{c['t_in']}_{c['cutoff']}.csv"
+
+
 def run_all(runs: list[str], force: bool = False) -> None:
-    """Score the runs that have no usefulness.csv (all of them with force), and the baselines of their data once."""
+    """Score the runs that have no usefulness.csv (all of them with force), and the baselines of their data if missing."""
     OUT.mkdir(parents=True, exist_ok=True)
     groups = {}                                                  # runs that share their data share a Group
     for r in runs:
-        if force or not (RUNS / r / "usefulness.csv").exists():
-            c = json.loads((RUNS / r / "config.json").read_text())
-            groups.setdefault((c["panels_dir"], c["t_in"], c["cutoff"]), []).append(r)
-    for rs in groups.values():
+        groups.setdefault(baselines_file(r), []).append(r)
+    for bfile, rs in groups.items():
+        todo = [r for r in rs if force or not (RUNS / r / "usefulness.csv").exists()]
+        if not todo and bfile.exists():
+            continue
         t0 = time.time()
         g = Group(rs[0])
-        bfile = OUT / f"baselines_{g.key()}.csv"
         if force or not bfile.exists():
             rows = sic_rows(g)
             for name, (full, holes) in g.baselines().items():
                 rows += score(g, full(), holes, name)
                 print(f"[INFO]   baseline {name} ({time.time() - t0:.0f} s)", flush=True)
             pd.DataFrame(rows).to_csv(bfile, index=False)
-        for r in rs:
+        for r in todo:
             enc = g.encoder(r)
             res = score(g, enc(g.X), lambda rows: enc(g.holed_X(rows, g.holes[rows])), "model")
             pd.DataFrame(res).to_csv(RUNS / r / "usefulness.csv", index=False)
@@ -381,26 +392,13 @@ def run_all(runs: list[str], force: bool = False) -> None:
 
 # --- runs and neighbours: helpers of the evaluation battery (model-evaluation/) -------------------------------------
 
-#: run families, by the tag at the end of the run folder's name (<timestamp>_<tag>_s<seed>)
-FAMILIES = {
-    "balanced": r"_B_z32_mask02_lam05_slogz_dec08_s\d+$",               # the paper model
-    "balanced, unmasked": r"_B_z32_lam05_slogz_dec08_s\d+$",            # --input_mask 0
-    "balanced, decay 1": r"_B_z32_mask02_lam05_slogz_s\d+$",            # --pillar2_decay 1
-    "balanced, λ 0.75": r"_B_z32_mask02_lam075_slogz_dec08_s\d+$",      # --lambda2 0.75
-}
+seed_of = ms.seed_of
 
 
-def seed_of(run: str) -> int:
-    """The training seed in a run folder's name (..._s<seed>)."""
-    return int(re.search(r"_s(\d+)$", run).group(1))
-
-
-def runs_of(family: str, scored: bool = False) -> list[str]:
-    """The finished runs of a family (with usefulness.csv if scored), seed 42 first, then by seed."""
-    rx = re.compile(FAMILIES[family])
-    rs = [d.name for d in RUNS.iterdir() if rx.search(d.name) and (d / "encoder.pth").exists()
-          and (not scored or (d / "usefulness.csv").exists())]
-    return sorted(rs, key=lambda r: (seed_of(r) != 42, seed_of(r)))
+def runs_of(variant: str, scored: bool = False) -> list[str]:
+    """The finished runs of a variant of main_similarity.VARIANTS on the latest panels (with usefulness.csv if
+    scored), seed 42 first, then by seed."""
+    return [r for r in ms.runs(variant) if not scored or (RUNS / r / "usefulness.csv").exists()]
 
 
 def cells_of(runs: list[str]) -> pd.DataFrame:
@@ -414,8 +412,7 @@ def cells_of(runs: list[str]) -> pd.DataFrame:
 
 def baselines_of(run: str) -> pd.DataFrame:
     """(set, task, quantity) x vector: the scores of the baselines scored with `run`'s data."""
-    c = json.loads((RUNS / run / "config.json").read_text())
-    b = pd.read_csv(OUT / f"baselines_{Path(c['panels_dir']).name}_tin{c['t_in']}_{c['cutoff']}.csv")
+    b = pd.read_csv(baselines_file(run))
     return b[b.q.eq("all")].pivot_table(index=CELL, columns="vector", values="value")
 
 
@@ -451,12 +448,15 @@ def overlap(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    """Score the runs named on the command line."""
+    """Score the runs named on the command line; with none, every run of every variant, then the battery."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("runs", nargs="*", help="Run folders in data/out/similarity.")
+    p.add_argument("runs", nargs="*", help="Run folders in data/out/similarity (default: every run of every variant).")
     p.add_argument("--force", action="store_true", help="Score again runs and baselines already scored.")
     args = p.parse_args()
-    run_all(args.runs, args.force)
+    run_all(args.runs or [r for v in ms.VARIANTS for r in runs_of(v)], args.force)
+    if not args.runs:
+        for script in BATTERY:
+            subprocess.run([sys.executable, str(script)], check=True)
 
 
 if __name__ == "__main__":

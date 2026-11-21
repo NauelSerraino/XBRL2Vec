@@ -18,7 +18,7 @@ OUT = HERE / "out"
 sys.path.insert(0, str(HERE.parents[1] / "src"))
 import usefulness_eval as ue  # noqa: E402
 
-MODEL, ABLATIONS = "balanced", {"no mask": "balanced, unmasked", "decay 1": "balanced, decay 1"}
+MODEL, ABLATIONS = "paper", {"no mask": "unmasked", "decay 1": "decay1"}     # main_similarity.VARIANTS
 SETS, TASKS, QUANTS = ["unseen firms", "unseen firms, out of time"], ["T1 peers", "T3 groups"], ["size", "revenue growth", "asset growth"]
 ORDER = pd.MultiIndex.from_product([SETS, TASKS, QUANTS], names=["set", "task", "quantity"])
 BLO = ("Bhojraj, Lee & Oler (2003), \"What's My Line? A Comparison of Industry Classification Schemes for Capital Market "

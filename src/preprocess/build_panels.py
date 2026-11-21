@@ -7,8 +7,7 @@ optional metadata.parquet of src/download/sec_metadata.py):
 One ticker per issuer (duplicates removed); quarters --start..--end (start auto: the first quarter with 20 % of firms
 reporting).
 
-filled/     the gap-filling pipeline agreed on 2026-10-25 (evidence: notebooks/00_data_holes_and_filling.ipynb). A 0 or a NaN
-            counts as missing. In this order:
+filled/     the gap-filling pipeline agreed on 2026-10-25. A 0 or a NaN counts as missing. In this order:
             1. alive >= 4 years: total assets reported over a span of at least 16 quarters, else the firm is dropped;
             2. fiscal-year-end quarter of flows (income statement, cash flow except End Cash Position). finqual
                derives it as annual report minus the three quarterly reports of the fiscal year, so:

@@ -44,7 +44,7 @@ LEGEND = pd.DataFrame([
 
 def main() -> None:
     """Peers under masking and across seeds, into out/robustness.xlsx (checked against the scored T5)."""
-    runs = ue.runs_of("balanced")
+    runs = ue.runs_of("paper")
     assert len(runs) == 10, len(runs)
     g = ue.Group(runs[0])
     enc = [g.encoder(r) for r in runs]

@@ -9,8 +9,8 @@ value; "legend": the terms and their papers).
   autoencoder       the model's encoder (same architecture, input, masking, training firms and settings) trained to
                     reconstruct its input window instead of the two pillars: does the objective matter?
 Ten values per method: the training seeds of the model and of the autoencoder (42, 1-9; the autoencoders are cached in
-out/autoencoder); for the raw fingerprint and PCA-32, which are not trained, 10 seeds of T2's k-means (their T1 has no
-randomness); the industry codes have no randomness at all.
+out/autoencoder/<panels>); for the raw fingerprint and PCA-32, which are not trained, 10 seeds of T2's k-means (their
+T1 has no randomness); the industry codes have no randomness at all.
 
     xbrl2vec/bin/python model-evaluation/downstream-tasks/comparison.py
 """
@@ -46,7 +46,7 @@ def autoencoder(g, seed: int, epochs: int = 20, mask: float = 0.2) -> np.ndarray
     torch.manual_seed(seed)
     enc = XBRL2VecEncoder(T, F, latent_dim=32, hidden=128)
     dec = nn.Sequential(nn.Linear(32, 128), nn.ReLU(), nn.Linear(128, T * F))
-    path = OUT / "autoencoder" / f"s{seed}.pth"
+    path = OUT / "autoencoder" / g.panels_dir.name / f"s{seed}.pth"             # one cache per download
     if path.exists():
         enc.load_state_dict(torch.load(path))
     else:

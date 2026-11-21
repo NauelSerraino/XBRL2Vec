@@ -1,11 +1,12 @@
 """
-Loading the preprocessed statements of a panel and cutting them into windows of consecutive quarters.
+Loading the preprocessed statements of a panel, cutting them into windows of consecutive quarters, and the model's
+sample (universe, balanced_firms; written once by src/main_download.py, step 5).
 
 A panel folder (data/in/panels_<date>/filled) holds, from src/preprocess/preprocess.py, six files
 {bs,ins,cf}_global_{train,test}.parquet: one row per firm-quarter, columns ticker, quarter and, for every statement line,
 its scaled amount ("Net PPE") and its changes ("Net PPE_DIFF_Q", "Net PPE_DIFF_Y"). "train" / "test" is that script's
-split of the companies; the model uses its own split (main_similarity.balanced_firms), so here the two files are only
-two halves of the same data.
+split of the companies; the model uses its own split (balanced_firms), so here the two files are only two halves of
+the same data.
 """
 from __future__ import annotations
 
@@ -16,8 +17,12 @@ import pandas as pd
 import torch
 
 from services.config import EXCLUDED_TICKERS
+from services.similarity import attach_fingerprints
 
 KEYS = ["ticker", "quarter"]
+T_IN = 12                                # quarters in a window
+LAST_QUARTER = "2025Q4"                  # whole years: the 2026 quarters are left out
+UNSEEN_SHARE, SPLIT_SEED = 0.15, 0       # the unseen firms: their share of the balanced firms, and the seed of the draw
 #: quarters left out: the data used start in 2013Q1 (the raw panels start in 2008Q4)
 EXCLUDED_QUARTERS = [f"{y}Q{q}" for y in (2011, 2012) for q in range(1, 5)]
 #: lines left out (almost always empty)
@@ -71,3 +76,40 @@ def sliding_windows(df: pd.DataFrame, t_in: int) -> tuple[torch.Tensor, pd.DataF
             X.append(np.lib.stride_tricks.sliding_window_view(run[cols].values, (t_in, len(cols))).squeeze(1))
             meta += [{"ticker": ticker, "quarter": q} for q in run.quarter.values[t_in - 1:]]
     return torch.tensor(np.concatenate(X), dtype=torch.float32), pd.DataFrame(meta), cols
+
+
+def windows(panel: Path, split: str, t_in: int, fp: pd.DataFrame | None = None):
+    """sliding_windows of one half of the companies (split "train" / "test" of preprocess.py). With fp: windows of the
+    fingerprint, on the firm-quarters of the balance sheet file. Without: windows of the amounts and their yearly
+    changes of the three statements (used only to define the universe)."""
+    S = load_statements(panel, split)
+    df = S["bs"].merge(S["ins"], on=KEYS).merge(S["cf"], on=KEYS) if fp is None else fp.merge(S["bs"][KEYS])
+    return sliding_windows(df, t_in)
+
+
+def universe(panel: Path, t_in: int) -> pd.MultiIndex:
+    """
+    The (ticker, quarter) pairs that can be used: those that end a complete window of t_in quarters in the amounts and
+    their yearly changes of all three statements, and in the fingerprint of every firm (targets/fingerprint_slogz.parquet),
+    up to LAST_QUARTER.
+    """
+    fp = pd.read_parquet(panel / "targets" / "fingerprint_slogz.parquet")
+    keys = None
+    for use_fp in (False, True):
+        parts = []
+        for split in ("train", "test"):
+            X, meta, cols = windows(panel, split, t_in, fp if use_fp else None)
+            parts.append(attach_fingerprints(X, meta, cols, fp).meta[KEYS])       # the last quarter has a fingerprint
+        k = pd.concat(parts)
+        keys = k if keys is None else keys.merge(k)
+    return pd.MultiIndex.from_frame(keys[keys.quarter.le(LAST_QUARTER)])
+
+
+def balanced_firms(keep: pd.MultiIndex) -> pd.DataFrame:
+    """ticker, split: the firms with a window at every quarter of the universe `keep`, a random UNSEEN_SHARE of them
+    "unseen" (the others "train")."""
+    k = keep.to_frame(index=False)
+    n = k.groupby("ticker").quarter.nunique()
+    firms = np.sort(n.index[n.eq(k.quarter.nunique())].to_numpy())
+    unseen = np.random.default_rng(SPLIT_SEED).permutation(firms)[:round(UNSEEN_SHARE * len(firms))]
+    return pd.DataFrame({"ticker": firms, "split": np.where(np.isin(firms, unseen), "unseen", "train")})

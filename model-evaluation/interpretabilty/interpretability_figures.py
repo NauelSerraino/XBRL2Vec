@@ -1,7 +1,8 @@
 """
-Interpretability figures of the paper model: the "balanced" family (protocol addendum 16: the 2,115 firms with full
-data 2013Q1-2025Q4, 317 unseen, cutoff 2022Q4; z 32, mask 0.2, λ 0.5, signed-log fingerprint, decay 0.8). The maps use
-seed 42; the importance the 10 seeds (dot: mean, line: range), on the unseen firms after the cutoff (2023Q1-2025Q4).
+Interpretability figures of the paper model, the "paper" variant of main_similarity.VARIANTS (protocol addendum 16:
+the 2,115 firms with full data 2013Q1-2025Q4, 317 unseen, cutoff 2022Q4; z 32, mask 0.2, λ 0.5, signed-log
+fingerprint, decay 0.8). The maps use seed 42; the importance the 10 seeds (dot: mean, line: range), on the unseen
+firms after the cutoff (2023Q1-2025Q4).
 Data and helpers are the scoring's own (src/usefulness_eval.py).
 
     xbrl2vec/bin/python model-evaluation/interpretabilty/interpretability_figures.py
@@ -215,7 +216,7 @@ def importance(g, enc: list, Z: list, ratios: list[str], stmt: dict) -> None:
 def main() -> None:
     """The 10 seeds' embeddings of every window, then the figures."""
     style()
-    runs = ue.runs_of("balanced")
+    runs = ue.runs_of("paper")
     assert len(runs) == 10, len(runs)
     g = ue.Group(runs[0])
     enc = [g.encoder(r) for r in runs]

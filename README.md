@@ -10,13 +10,13 @@ Accounting data only: no prices, no text, no industry codes as inputs.
 
 ## Pipeline
 
+Three steps; [src/main.py](src/main.py) runs them in order, and each also runs alone:
+
 | step | script | output |
 | --- | --- | --- |
-| 1–4 | [src/main_download.py](src/main_download.py): download (finqual), SEC metadata, gap-filled panel, preprocessing | `data/in/download_<date>/`, `data/in/panels_<date>/filled/` |
-| 5 | [src/preprocess/fingerprint.py](src/preprocess/fingerprint.py): 32 size-free ratios per firm-quarter | `filled/targets/fingerprint_slogz*.parquet` |
-| 6 | [src/main_similarity.py](src/main_similarity.py): train one encoder (one seed) | `data/out/similarity/<run>/encoder.pth` |
-| 7 | [src/usefulness_eval.py](src/usefulness_eval.py): score runs and baselines | `<run>/usefulness.csv` |
-| 8 | [model-evaluation/run-all.py](model-evaluation/run-all.py): figures, ablation, comparison, robustness | `model-evaluation/*/out/` |
+| 1. data | [src/main_download.py](src/main_download.py): download (finqual), SEC metadata, gap-filled panel, amounts, the 32-ratio fingerprint, the balanced sample | `data/in/download_<date>/`, `data/in/panels_<date>/filled/` |
+| 2. train | [src/main_similarity.py](src/main_similarity.py): the paper model and its two ablations, 10 seeds each (skips runs already trained) | `data/out/similarity/<run>/encoder.pth` |
+| 3. evaluate | [src/usefulness_eval.py](src/usefulness_eval.py): scores of every run and the baselines, then the battery (figures, ablation, comparison, robustness) | `<run>/usefulness.csv`, `model-evaluation/*/out/` |
 
 The model is a DLinear encoder (trend and remainder of each ratio over 12 quarters) followed by an MLP, about 29,000
 parameters. It is trained with a pairwise cosine-matching loss on batches of firms from the same quarter, with 20 % of
@@ -30,14 +30,14 @@ src/
   preprocess/        gap-filled panel, scaled amounts, fingerprint
   services/          data windows, targets, loss and training loop, constants
   models/            the encoder
-  main_download.py   steps 1-4
-  main_similarity.py training
-  usefulness_eval.py scoring
-model-evaluation/    the standard evaluation battery (each folder writes to its out/)
-notebooks/           data holes and filling (00), the fingerprint (01), the ablation (07)
+  main.py            the three steps in order
+  main_download.py   1. data
+  main_similarity.py 2. train
+  usefulness_eval.py 3. evaluate
+model-evaluation/    the evaluation battery, run by step 3 (each folder writes to its out/)
 tests/               pytest
 slides/              presentation
-docs/                private submodule: protocol, reports, the code walkthrough
+docs/                private submodule: the code walkthrough, the model in formulas, the protocol
 ```
 
 ## Setup
@@ -54,13 +54,12 @@ in the User-Agent: pass `--user_agent "<name> <email>"`.
 ## Running
 
 ```bash
-xbrl2vec/bin/python src/main_download.py --user_agent "<name> <email>"           # 1-4, resumable
-xbrl2vec/bin/python src/preprocess/fingerprint.py --panel data/in/panels_<date>/filled
-cd src && ../xbrl2vec/bin/python main_similarity.py --seed 42 --out ../data/out/similarity/<name>
-../xbrl2vec/bin/python usefulness_eval.py <name>
-cd .. && xbrl2vec/bin/python model-evaluation/run-all.py
+xbrl2vec/bin/python src/main.py --user_agent "<name> <email>"           # everything; the download takes a night
+
+xbrl2vec/bin/python src/main_download.py --user_agent "<name> <email>"  # 1. data (resumable)
+xbrl2vec/bin/python src/main_similarity.py                              # 2. train
+xbrl2vec/bin/python src/usefulness_eval.py                              # 3. evaluate
 ```
 
-The first training run writes the balanced firm list and asks for a second fingerprint pass on those firms
-(`fingerprint.py --firms`). `docs/code_walkthrough.md` follows every step in detail: files, functions, shapes,
-formulas, and how the 40 runs of the paper (4 variants × 10 seeds) are named and trained.
+`docs/code_walkthrough.md` follows every step in detail: files, functions, shapes, formulas, and how the runs are
+named and trained.
