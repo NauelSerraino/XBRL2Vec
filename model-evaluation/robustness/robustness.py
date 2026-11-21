@@ -1,6 +1,6 @@
 """
 Robustness of the paper model's peers (a firm's 10 nearest firms by cosine, among all firms of the quarter), on the
-unseen firms before the cutoff (2015Q4-2022Q4) and after it (2023Q1-2025Q4), means over the quarters -> robustness.xlsx:
+unseen firms before the cutoff (2015Q4-2022Q4) and after it (2023Q1-2025Q4), means over the quarters -> out/robustness.xlsx:
   masking      share of the 10 peers kept when a random share of the last quarter's 32 ratios is missing (0, as in
                the data), for each of the 10 seeds; at 20 % this is the protocol's T5
   seeds        share of the 10 peers two seeds have in common: mean, min and max over the 45 pairs of seeds
@@ -17,8 +17,8 @@ import numpy as np
 import pandas as pd
 
 HERE = Path(__file__).resolve().parent
+OUT = HERE / "out"
 sys.path.insert(0, str(HERE.parents[1] / "src"))
-import stability_eval as se  # noqa: E402
 import usefulness_eval as ue  # noqa: E402
 
 SETS, SHARES = ["unseen firms", "unseen firms, out of time"], [0.05, 0.1, 0.2, 0.3, 0.4, 0.5]
@@ -43,39 +43,41 @@ LEGEND = pd.DataFrame([
 
 
 def main() -> None:
-    runs = se.runs_of("balanced")
+    """Peers under masking and across seeds, into out/robustness.xlsx (checked against the scored T5)."""
+    runs = ue.runs_of("balanced")
     assert len(runs) == 10, len(runs)
-    g = se.group(runs[0])
-    enc = [se.encoder(g, r) for r in runs]
+    g = ue.Group(runs[0])
+    enc = [g.encoder(r) for r in runs]
     U = [ue._unit(e(g.X)) for e in enc]
-    seeds, K = [se.seed_of(r) for r in runs], g.FP.shape[1]
+    seeds, K = [ue.seed_of(r) for r in runs], g.FP.shape[1]
     mask, pairs = [], []
     for s in SETS:
         for q in g.quarters[s]:
-            pool = se.pool_of(g, q)
+            pool = ue.pool_of(g, q)
             own = np.flatnonzero(g.focal[s][pool])
-            nn = [se.knn(u[pool])[own] for u in U]
-            pairs += [{"set": s, "seed a": a, "seed b": b, "kept": se.overlap(na, nb).mean()}
+            nn = [ue.knn(u[pool])[own] for u in U]
+            pairs += [{"set": s, "seed a": a, "seed b": b, "kept": ue.overlap(na, nb).mean()}
                       for (a, na), (b, nb) in combinations(zip(seeds, nn), 2)]
             for sh in SHARES:
-                holes = se.random_holes(len(own), K, round(sh * K), seed=1)
+                holes = ue.random_holes(len(own), K, round(sh * K), seed=1)
                 mask += [{"set": s, "share missing": sh, "seed": sd,
-                          "kept": se.overlap(se.knn_holed(ue._unit(e(se.holed_X(g, pool[own], holes))), u[pool], own), n).mean()}
+                          "kept": ue.overlap(ue.knn_holed(ue._unit(e(g.holed_X(pool[own], holes))), u[pool], own), n).mean()}
                          for sd, e, u, n in zip(seeds, enc, U, nn)]
         print(f"[INFO] {s} done", flush=True)
     m = pd.DataFrame(mask).groupby(["set", "share missing", "seed"]).kept.mean().unstack("seed")[seeds]
     m = pd.concat([m.agg(["mean", "min", "max"], axis=1), m], axis=1)
     p = pd.DataFrame(pairs).groupby(["set", "seed a", "seed b"]).kept.mean()
-    t5 = se.cells_of(runs).rename(index=se.seed_of)
+    t5 = ue.cells_of(runs).rename(index=ue.seed_of)
     for s in SETS:                                   # self-check: 20 % missing gives the scored T5 (other random holes)
         ref = t5[(s, "T5 holes", "10-NN overlap, 20 % of last quarter missing")][seeds]
         assert np.allclose(m.loc[(s, 0.2), seeds], ref, atol=0.03), (s, m.loc[(s, 0.2), seeds].tolist(), ref.tolist())
-    with pd.ExcelWriter(HERE / "robustness.xlsx") as xl:
+    OUT.mkdir(exist_ok=True)
+    with pd.ExcelWriter(OUT / "robustness.xlsx") as xl:
         m.round(4).reset_index().to_excel(xl, sheet_name="masking", index=False)
         p.groupby("set").agg(["mean", "min", "max"]).round(4).reset_index().to_excel(xl, sheet_name="seeds", index=False)
         p.round(4).reset_index().to_excel(xl, sheet_name="seed pairs", index=False)
         LEGEND.to_excel(xl, sheet_name="legend", index=False)
-    print(f"[INFO] {HERE / 'robustness.xlsx'}")
+    print(f"[INFO] {OUT / 'robustness.xlsx'}")
 
 
 if __name__ == "__main__":
