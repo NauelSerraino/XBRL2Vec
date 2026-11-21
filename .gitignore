@@ -2,15 +2,8 @@
 .vscode/
 xbrl2vec/
 
-mlartifacts/
-mlruns/
-mlruns_artifacts/
-runs/
-
 data/in
 data/out
-tables/
-deprecated/
 
 **/__pycache__/
 *.png

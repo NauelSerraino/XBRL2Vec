@@ -1,136 +1,66 @@
-# XBRL2Vec — Contextual vs Blind Financial Autoencoder
+# XBRL2Vec: firm embeddings from financial statements
 
-A research framework for quantifying **macro exposure** in corporate financial statements. It trains two D-Linear autoencoders side-by-side:
+XBRL2Vec turns 12 quarters of a company's financial statements (SEC XBRL filings) into a 32-number embedding. Two
+firms are similar when their embeddings have a high cosine. The encoder is trained on two targets at once: the
+firm's current financial structure (Pillar 1: 32 ratios of its last quarter) and its recent dynamics (Pillar 2: the
+year-on-year moves of those ratios inside the window). The embeddings are then scored on tasks they never saw:
+peer firms, industry, groups, size and growth.
 
-- **Contextual model** — reconstructs financial time series using both financial inputs and macroeconomic context.
-- **Blind model** — same architecture, but macro inputs are zeroed out.
+Accounting data only: no prices, no text, no industry codes as inputs.
 
-The difference in out-of-sample reconstruction error (*Macro Gain = blind MSE − contextual MSE*) measures how much macroeconomic information the financial data implicitly carries.
+## Pipeline
 
----
+| step | script | output |
+| --- | --- | --- |
+| 1–4 | [src/main_download.py](src/main_download.py): download (finqual), SEC metadata, gap-filled panel, preprocessing | `data/in/download_<date>/`, `data/in/panels_<date>/filled/` |
+| 5 | [src/preprocess/fingerprint.py](src/preprocess/fingerprint.py): 32 size-free ratios per firm-quarter | `filled/targets/fingerprint_slogz*.parquet` |
+| 6 | [src/main_similarity.py](src/main_similarity.py): train one encoder (one seed) | `data/out/similarity/<run>/encoder.pth` |
+| 7 | [src/usefulness_eval.py](src/usefulness_eval.py): score runs and baselines | `<run>/usefulness.csv` |
+| 8 | [model-evaluation/run-all.py](model-evaluation/run-all.py): figures, ablation, comparison, robustness | `model-evaluation/*/out/` |
 
-## Project structure
+The model is a DLinear encoder (trend and remainder of each ratio over 12 quarters) followed by an MLP, about 29,000
+parameters. It is trained with a pairwise cosine-matching loss on batches of firms from the same quarter, with 20 % of
+the input cells masked.
+
+## Layout
 
 ```text
-XBRL2Vec/
-├── src/
-│   ├── main.py                          # Entry point & experiment loop
-│   ├── models/
-│   │   └── autoencoder_dlinear_conditioner.py  # CompanyEmbeddingAE (active model)
-│   ├── services/
-│   │   ├── config.py                    # Global constants (SEQ_LEN, DEVICE, tickers)
-│   │   ├── data.py                      # Data loading, alignment, dataset container
-│   │   ├── evaluation.py                # OOS metrics, importance matrix, variance analysis
-│   │   ├── training.py                  # MaskedAETrainer
-│   │   └── transforms.py               # symmetric_log, macro weighting
-│   └── mlflow_logging/
-│       ├── plots.py                     # All MLflow plot helpers
-│       ├── saliency.py                  # Integrated Gradients (Captum)
-│       └── artifacts.py                 # Artifact path management
-├── data/in/                             # Parquet data files (not tracked by git)
-├── notebooks/                           # Exploratory and post-training analysis
-├── tests/                               # Unit tests
-├── docker-compose.yaml                  # PostgreSQL backend for MLflow
-├── MLproject                            # MLflow project definition
-├── python_env.yaml                      # Conda environment spec
-└── requirements.txt                     # Pip dependencies
+src/
+  download/          finqual download, SEC metadata
+  preprocess/        gap-filled panel, scaled amounts, fingerprint
+  services/          data windows, targets, loss and training loop, constants
+  models/            the encoder
+  main_download.py   steps 1-4
+  main_similarity.py training
+  usefulness_eval.py scoring
+model-evaluation/    the standard evaluation battery (each folder writes to its out/)
+notebooks/           data holes and filling (00), the fingerprint (01), the ablation (07)
+tests/               pytest
+slides/              presentation
+docs/                private submodule: protocol, reports, the code walkthrough
 ```
-
----
 
 ## Setup
 
-### 1. Install dependencies
-
 ```bash
-pip install -r requirements.txt
+python3.11 -m venv xbrl2vec && xbrl2vec/bin/pip install -r requirements.txt
+xbrl2vec/bin/python -m pytest tests
 ```
 
-### 2. Data
+The download (step 1) runs with a Python that has a fork of [finqual](https://github.com/harryy-he/finqual)
+installed, by default `~/vscode/finqual/finqual-venv` (override with `--finqual_python` or `FINQUAL_PYTHON`). SEC asks for a contact
+in the User-Agent: pass `--user_agent "<name> <email>"`.
 
-Place the following parquet files in `data/in/`:
-
-| File | Description |
-| --- | --- |
-| `bs_pct_train.parquet` | Balance Sheet — train |
-| `ins_pct_train.parquet` | Income Statement — train |
-| `cf_pct_train.parquet` | Cash Flow Statement — train |
-| `bs_pct_test.parquet` | Balance Sheet — test |
-| `ins_pct_test.parquet` | Income Statement — test |
-| `cf_pct_test.parquet` | Cash Flow Statement — test |
-| `exog.parquet` | Macroeconomic indicators (GDP, CPI, DFF, …) |
-| `metadata.parquet` | Company metadata (ticker, sector) |
-
-### 3. Start the MLflow backend
+## Running
 
 ```bash
-# Spin up the PostgreSQL backend
-docker compose up -d
-
-# Start the MLflow tracking server
-mlflow server --host 127.0.0.1 --port 5000
+xbrl2vec/bin/python src/main_download.py --user_agent "<name> <email>"           # 1-4, resumable
+xbrl2vec/bin/python src/preprocess/fingerprint.py --panel data/in/panels_<date>/filled
+cd src && ../xbrl2vec/bin/python main_similarity.py --seed 42 --out ../data/out/similarity/<name>
+../xbrl2vec/bin/python usefulness_eval.py <name>
+cd .. && xbrl2vec/bin/python model-evaluation/run-all.py
 ```
 
-The UI will be available at `http://localhost:5000`.
-
-### 4. (Optional) TensorBoard
-
-```bash
-tensorboard --logdir=runs --port=6006
-```
-
----
-
-## Running experiments
-
-```bash
-python src/main.py \
-    --latent_factors 0.5 1.0 2.0 3.0 \
-    --epochs 20 \
-    --batch_size 32 \
-    --learning_rate 0.001 \
-    --seed 42
-```
-
-The loop trains one MLflow run per latent factor. `latent_dim` is computed as `ceil(fin_dim × factor)`, so the same set of factors adapts to the number of financial features in the data.
-
-### CLI reference
-
-| Argument | Type | Default | Description |
-| --- | --- | --- | --- |
-| `--latent_factors` | `float …` | `0.5 1.0 2.0 3.0` | Multipliers of `fin_dim` used to derive `latent_dim` |
-| `--epochs` | `int` | `20` | Training epochs per model |
-| `--batch_size` | `int` | `32` | Mini-batch size |
-| `--learning_rate` | `float` | `0.001` | Adam learning rate |
-| `--mask_prob` | `float` | `0.2` | Feature masking probability (active when `use_mask=1`) |
-| `--use_mask` | `0 / 1` | `0` | Enable BERT-style masked reconstruction loss |
-| `--seed` | `int` | `42` | Global random seed |
-
----
-
-## Model architecture
-
-`CompanyEmbeddingAE` ([src/models/autoencoder_dlinear_conditioner.py](src/models/autoencoder_dlinear_conditioner.py)) is a D-Linear autoencoder with macro conditioning:
-
-1. **DLinearEncoder** — decomposes the financial time series `[B, T, F]` into seasonal and trend components, then projects to a financial embedding `h_fin ∈ ℝᴴ`.
-2. **MacroEncoder** — projects the macroeconomic series `[B, T, M]` to a macro embedding `h_mac ∈ ℝᴴ`.
-3. **MacroConditioner** — learns affine parameters `(γ, β)` from `h_mac` and applies them to `h_fin`: `h_cond = γ ⊙ h_fin + β`.
-4. **FinancialDecoder** — reconstructs `[B, T, F]` from `h_cond`.
-
-The blind model uses the same architecture but receives `zeros_like(X_macro)` as input.
-
----
-
-## Metrics logged to MLflow
-
-| Metric | Description |
-| --- | --- |
-| `final_mse_contextual` | Train-set MSE — contextual model |
-| `final_mse_macro_blind` | Train-set MSE — blind model |
-| `oos_mse_contextual` | Out-of-sample MSE — contextual |
-| `oos_mae_contextual` | Out-of-sample MAE — contextual |
-| `oos_mse_blind` | Out-of-sample MSE — blind |
-| `oos_mae_blind` | Out-of-sample MAE — blind |
-| `oos_macro_gain` | `oos_mse_blind − oos_mse_contextual` (key metric) |
-
-Plots logged per run: correlation matrix, loss curves, feature importance heatmaps, embedding geometry, variance analysis (R²), macro exposure density, and Integrated Gradients saliency maps.
+The first training run writes the balanced firm list and asks for a second fingerprint pass on those firms
+(`fingerprint.py --firms`). `docs/code_walkthrough.md` follows every step in detail: files, functions, shapes,
+formulas, and how the 40 runs of the paper (4 variants × 10 seeds) are named and trained.
