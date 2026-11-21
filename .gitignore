@@ -4,6 +4,7 @@ xbrl2vec/
 
 data/in
 data/out
+model-evaluation/*/out/
 
 **/__pycache__/
 *.png
