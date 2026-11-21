@@ -1,22 +1,27 @@
 """
-Pillar 1 target: the financial fingerprint of every firm-quarter (notebook 01_pillar1_financial_fingerprints).
+The financial fingerprint of every firm-quarter: 32 ratios that describe the firm's statements without its size. It is
+both the encoder's input (12 quarters of it) and its Pillar 1 target (the last quarter's).
 
     python src/preprocess/fingerprint.py --panel data/in/panels_2026-10-25/filled
+    python src/preprocess/fingerprint.py --panel data/in/panels_2026-10-25/filled --firms <panel>/targets/firms_balanced.parquet
 
-One vector per firm-quarter, from the raw statements of a panel ({bs,ins,cf}-raw.parquet):
-  balance sheet and end cash   line / total assets
-  income statement             trailing-12-month line / trailing-12-month revenue
-  cash flow                    trailing-12-month line / total assets
-without the lines that are empty, mirrored or redundant (DROP). Each quarter's cross-section is clipped at its 1st and
-99th percentiles and standardised; a missing ratio (line not reported) is 0, the cross-sectional mean. --scaling rank
-(add-on, <panel>/targets/fingerprint_rank.parquet): instead of the z-score, each ratio's normal score of its rank in
-the quarter, Φ⁻¹((rank − 0.5) / n), so that a few extreme firms (tiny revenue) do not squeeze every other firm to ~0,
-as the z-score does with the income-statement ratios. Firm-quarters
-without positive total assets, or without any ratio, get no fingerprint. Training uses cos(f_i, f_j) of firms in the same quarter.
+From the raw statements of a panel ({bs,ins,cf}-raw.parquet: amounts in dollars, one row per firm and line, one column
+per quarter), for each firm-quarter:
+  balance-sheet lines and the end cash position   line / total assets
+  income-statement lines                          trailing-12-month line / trailing-12-month revenue
+  cash-flow lines                                 trailing-12-month line / total assets
+without the lines of DROP (the denominators, empty or mirrored lines): 17 + 10 + 5 = 32 ratios. Then, per quarter and
+ratio, across the firms:
+  1. clip at the 1st and 99th percentiles
+  2. signed log, sign(x) · log(1 + |x|): compresses the extreme ratios (a firm with almost no revenue) before they set
+     the standard deviation, and keeps the sign
+  3. z-score (minus the mean, over the standard deviation)
+A ratio that is not reported becomes 0, the mean of the quarter. Firm-quarters without positive total assets, or
+without any ratio, get no fingerprint.
 
-Output: <panel>/targets/fingerprint.parquet, columns ticker, quarter and one per ratio. Also, for each --horizons h
-(default 4), the Pillar 2 target <panel>/targets/fingerprint_change_h<h>.parquet: Δf = f(t + h) − f(t), the change of
-the firm's fingerprint over the next h quarters, indexed by t (rows only where both quarters have a fingerprint).
+Output: <panel>/targets/fingerprint_slogz.parquet, columns ticker, quarter and one per ratio. With --firms (a parquet
+with a ticker column): the fingerprint of those firms only, scaled on them, in fingerprint_slogz_balanced.parquet (the
+model's sample, see main_similarity.py).
 """
 from __future__ import annotations
 
@@ -34,7 +39,7 @@ STATEMENTS = {"bs": "balance sheet", "ins": "income statement", "cf": "cash flow
 
 
 def load_raw(panel: Path) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
-    """{line: ticker x quarter} and {line: statement} from a panel's raw files."""
+    """{line: ticker x quarter, in dollars} and {line: statement ("bs", "ins" or "cf")} from a panel's raw files."""
     wide = pd.concat([pd.read_parquet(panel / f"{s}-raw.parquet").assign(stmt=s) for s in STATEMENTS], ignore_index=True)
     quarters = sorted(c for c in wide.columns if len(str(c)) == 6 and str(c)[4] == "Q")
     lines = {k: g.set_index("ticker")[quarters].astype(float) for k, g in wide.groupby("features")}
@@ -42,23 +47,16 @@ def load_raw(panel: Path) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     return {k: v.reindex(tickers) for k, v in lines.items()}, wide.groupby("features").stmt.first().to_dict()
 
 
-def scale(F: pd.DataFrame, scaling: str = "zscore") -> pd.DataFrame:
-    """Per quarter (index level "quarter") and ratio: z-score, or normal score of the rank among the reported values,
-    or (slogz) the z-score of the signed log sign(x) log(1 + |x|), which compresses the extreme ratios before they set
-    the standard deviation and keeps the size of differences; a missing ratio is 0 in all three."""
-    if scaling == "slogz":
-        F, scaling = np.sign(F) * np.log1p(F.abs()), "zscore"
+def scale(F: pd.DataFrame) -> pd.DataFrame:
+    """Per quarter (index level "quarter") and ratio: the z-score of the signed log; a missing ratio becomes 0."""
+    F = np.sign(F) * np.log1p(F.abs())
     by_q = F.groupby(level="quarter")
-    if scaling == "zscore":
-        return ((F - by_q.transform("mean")) / by_q.transform("std")).fillna(0.0)
-    from scipy.stats import norm
-    u = (by_q.rank(method="average") - 0.5) / by_q.transform("count")
-    return pd.DataFrame(norm.ppf(u), index=F.index, columns=F.columns).fillna(0.0)
+    return ((F - by_q.transform("mean")) / by_q.transform("std")).fillna(0.0)
 
 
-def fingerprints(L: dict[str, pd.DataFrame], stmt_of: dict[str, str], scaling: str = "zscore") -> pd.DataFrame:
-    """Long frame (ticker, quarter, one column per ratio), standardised per quarter (see scale)."""
-    ttm = lambda df: df.T.rolling(4, min_periods=4).sum().T
+def fingerprints(L: dict[str, pd.DataFrame], stmt_of: dict[str, str]) -> pd.DataFrame:
+    """Long frame (ticker, quarter, one column per ratio) from the lines L of load_raw (see the module docstring)."""
+    ttm = lambda df: df.T.rolling(4, min_periods=4).sum().T              # trailing 12 months: the sum of 4 quarters
     ta = L["Total Assets"].where(L["Total Assets"] > 0)
     rev = ttm(L["Total Revenue"]).where(lambda v: v > 0)
     parts = {}
@@ -78,53 +76,27 @@ def fingerprints(L: dict[str, pd.DataFrame], stmt_of: dict[str, str], scaling: s
     by_q = F.groupby(level="quarter")
     F = F.clip(by_q.transform(lambda c: c.quantile(0.01)), by_q.transform(lambda c: c.quantile(0.99)))
     reported = F.notna().any(axis=1)
-    F = scale(F, scaling)
+    F = scale(F)
     return F[reported & (F.abs().sum(axis=1) > 0)].reset_index()     # no fingerprint without any ratio
 
 
-def _shift(q: str, h: int) -> str:
-    n = int(q[:4]) * 4 + int(q[-1]) - 1 + h
-    return f"{n // 4}Q{n % 4 + 1}"
-
-
-def changes(F: pd.DataFrame, h: int) -> pd.DataFrame:
-    """Δf = f(t + h) − f(t) for every firm-quarter t whose t + h has a fingerprint; same layout as F, indexed by t."""
-    cur = F.set_index(["ticker", "quarter"])
-    later = F.assign(quarter=F.quarter.map(lambda q: _shift(q, -h))).set_index(["ticker", "quarter"])
-    both = cur.index.intersection(later.index)
-    return (later.loc[both] - cur.loc[both]).reset_index()
-
-
 def main() -> None:
+    """Fingerprints of the panel (or of --firms only), written to <panel>/targets/."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--panel", type=Path, required=True, help="Folder with {bs,ins,cf}-raw.parquet.")
-    p.add_argument("--out", type=Path, default=None, help="Default: <panel>/targets/fingerprint.parquet.")
-    p.add_argument("--horizons", type=int, nargs="*", default=[4], help="Horizons h of the change targets (none: skip).")
-    p.add_argument("--scaling", choices=["zscore", "rank", "slogz"], default="zscore",
-                   help="rank: normal scores of the ranks (fingerprint_rank.parquet); slogz: z-score of the signed log "
-                        "(fingerprint_slogz.parquet); neither writes change targets.")
     p.add_argument("--firms", type=Path, default=None,
-                   help="Parquet with a ticker column: the fingerprint of these firms only, scaled on them (no change "
-                        "targets; main_similarity.py --sample balanced).")
+                   help="Parquet with a ticker column: the fingerprint of these firms only, scaled on them.")
     args = p.parse_args()
     L, stmt_of = load_raw(args.panel)
     if args.firms:
         firms = set(pd.read_parquet(args.firms).ticker)
         L = {k: v[v.index.isin(firms)] for k, v in L.items()}
-    F = fingerprints(L, stmt_of, args.scaling)
-    name = {"zscore": "fingerprint.parquet", "rank": "fingerprint_rank.parquet", "slogz": "fingerprint_slogz.parquet"}
-    out = args.out or args.panel / "targets" / name[args.scaling]
-    if args.scaling != "zscore" or args.firms:
-        args.horizons = []
+    F = fingerprints(L, stmt_of)
+    out = args.panel / "targets" / ("fingerprint_slogz_balanced.parquet" if args.firms else "fingerprint_slogz.parquet")
     out.parent.mkdir(parents=True, exist_ok=True)
     F.to_parquet(out)
     print(f"fingerprints: {F.ticker.nunique():,} firms, {len(F):,} firm-quarters, {F.shape[1] - 2} ratios, "
           f"{F.quarter.min()}–{F.quarter.max()} -> {out}")
-    for h in args.horizons:
-        C = changes(F, h)
-        path = out.with_name(f"fingerprint_change_h{h}.parquet")
-        C.to_parquet(path)
-        print(f"changes over {h} quarters: {len(C):,} firm-quarters, {C.quarter.min()}–{C.quarter.max()} -> {path}")
 
 
 if __name__ == "__main__":

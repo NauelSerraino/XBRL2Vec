@@ -51,7 +51,7 @@ log = logging.getLogger("download_finqual")
 
 
 class Timeout(Exception):
-    pass
+    """Raised by SIGALRM when one company takes longer than --timeout."""
 
 
 REQUESTS_MADE = 0
@@ -88,10 +88,12 @@ def install_rate_limit(max_per_second: float, backoff: float = 60.0, retries: in
 
 
 def _on_alarm(signum, frame):
+    """SIGALRM handler: abort the company in progress."""
     raise Timeout()
 
 
 def sec_headers(user_agent: str) -> dict:
+    """The headers SEC asks for: a contact User-Agent and compressed answers."""
     return {"User-Agent": user_agent, "Accept": "application/json, text/plain, */*", "Accept-Encoding": "gzip, deflate"}
 
 
@@ -154,6 +156,7 @@ def read_progress(out: Path) -> dict[str, str]:
 
 
 def append_progress(path: Path, row: dict) -> None:
+    """Append one company's outcome to this worker's progress file (header on first write)."""
     new = not path.exists()
     with open(path, "a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=PROGRESS_FIELDS)
@@ -216,6 +219,7 @@ def download_one(fq, ticker: str, start_year: int, end_year: int) -> tuple[pd.Da
 
 
 def safe_name(ticker: str) -> str:
+    """The ticker as a file name (BRK/B -> BRK_B)."""
     return ticker.replace("/", "_")
 
 
@@ -237,6 +241,7 @@ def merge(out: Path) -> None:
 
 
 def finqual_info(fq) -> dict:
+    """Where finqual was loaded from and its git commit / version, recorded in download_info.json."""
     path = Path(fq.__file__).resolve().parent
     try:
         commit = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -251,6 +256,7 @@ def finqual_info(fq) -> dict:
 
 
 def main() -> None:
+    """One worker's run: the ticker list, then each company not yet done, then (unless --no_merge) the merge."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", type=Path, default=Path("data/in") / f"download_{date.today().isoformat()}")
     p.add_argument("--start_year", type=int, default=2000,

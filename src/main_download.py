@@ -1,12 +1,11 @@
 """
-Data pipeline before modelling: download, metadata, panels, preprocessing.
+Data pipeline before modelling: download, metadata, panel, preprocessing. Step 5, the fingerprint, is run separately
+(see docs/code_walkthrough.md).
 
   1. finqual download of every company in SEC's current ticker list   src/download/download_finqual.py
-  2. SEC metadata (fiscal-year end, SIC) and FRED macro series         src/download/sec_metadata.py, fred.py
-  3. the two panels, complete/ and filled/                             src/preprocess/build_panels.py
-  4. differencing, scaling and company train/test split of each panel  src/preprocess/preprocess.py
-     (+ exog.parquet and metadata.parquet next to the panels, read by src/main.py)
-  5. Pillar 2-3 target vectors from the filled panel                   src/preprocess/pillar_targets.py
+  2. SEC metadata (fiscal-year end, SIC code)                          src/download/sec_metadata.py
+  3. the panel with its gaps filled, filled/                           src/preprocess/build_panels.py
+  4. scaled amounts and their changes, split into two halves of firms  src/preprocess/preprocess.py
 
     # tonight: everything, into data/in/download_<today>/ and data/in/panels_<today>/ (resumable: just re-run)
     xbrl2vec/bin/python src/main_download.py --user_agent "Name Surname name@example.org"
@@ -14,11 +13,11 @@ Data pipeline before modelling: download, metadata, panels, preprocessing.
     # smoke test on 5 companies, into a scratch folder
     xbrl2vec/bin/python src/main_download.py --limit 5 --download_dir /tmp/dl_test
 
-    # steps 2-5 on an existing download
+    # steps 2-4 on an existing download
     xbrl2vec/bin/python src/main_download.py --download_dir data/in/download_2025-11-10 --skip_download
 
 Steps 1-2 run with a Python that has finqual (default: the venv of the finqual fork, override with --finqual_python
-or FINQUAL_PYTHON); steps 3-5 with the Python running this script. Each step's output is written to its folder;
+or FINQUAL_PYTHON); steps 3-4 with the Python running this script. Each step's output is written to its folder;
 logs go to <download_dir>/pipeline.log. Stop with Ctrl-C at any time: re-running resumes the download where it
 stopped.
 """
@@ -37,6 +36,7 @@ DEFAULT_FINQUAL_PYTHON = Path.home() / "vscode" / "finqual" / "finqual-venv" / "
 
 
 def run(cmd: list[str], log: Path) -> None:
+    """Run one step from the project root, note it in the log, stop the pipeline if it fails."""
     line = " ".join(str(c) for c in cmd)
     print(f"\n$ {line}", flush=True)
     with open(log, "a") as fh:
@@ -71,6 +71,7 @@ def run_parallel(cmds: list[list], d: Path, log: Path) -> None:
 
 
 def main() -> None:
+    """Parse the options and run steps 1-4 in order, each skippable."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--download_dir", type=Path, default=ROOT / "data" / "in" / f"download_{date.today().isoformat()}")
     p.add_argument("--panels_dir", type=Path, default=None, help="Default: <download_dir with download_ -> panels_>.")
@@ -78,19 +79,15 @@ def main() -> None:
     p.add_argument("--user_agent", default=None, help="Contact for SEC's User-Agent header, e.g. 'Name name@example.org'.")
     p.add_argument("--start_year", type=int, default=2000, help="First year requested (finqual returns what exists, ~2006–2008 on).")
     p.add_argument("--start", default="auto", help="First quarter of the filled panel (auto: first quarter with 20 %% of firms).")
-    p.add_argument("--complete_start", default="2011Q1", help="First quarter of the complete panel.")
-    p.add_argument("--fred_start", default="1990-01-01", help="First date of the FRED macro series.")
     p.add_argument("--end", default=None, help="Last quarter of the panels (default: inferred from the data).")
     p.add_argument("--limit", type=int, default=None, help="Download only the first N companies (smoke test).")
     p.add_argument("--max_requests_per_second", type=float, default=8.0,
                    help="Total cap over all workers (SEC's limit is 10 per second per client).")
     p.add_argument("--workers", type=int, default=4,
                    help="Parallel download workers (each ~12 s a company and one core; with 4, roughly 6 h for ~7,000 companies).")
-    p.add_argument("--norm_mode", default="global", choices=["global", "per_ticker"])
     p.add_argument("--skip_download", action="store_true")
     p.add_argument("--skip_metadata", action="store_true")
     p.add_argument("--skip_preprocess", action="store_true")
-    p.add_argument("--skip_targets", action="store_true")
     args = p.parse_args()
 
     d = args.download_dir.resolve()
@@ -116,27 +113,12 @@ def main() -> None:
         if args.limit:
             cmd += ["--only_downloaded"]
         run(cmd, log)
-        run([sys.executable, ROOT / "src" / "download" / "fred.py", "--out", d / "fred", "--start", args.fred_start], log)
     cmd = [sys.executable, ROOT / "src" / "preprocess" / "build_panels.py", "--download_dir", d, "--out_dir", panels,
-           "--start", args.start, "--complete_start", args.complete_start] + (["--end", args.end] if args.end else [])
+           "--start", args.start] + (["--end", args.end] if args.end else [])
     run(cmd, log)
-    import pandas as pd
-    # what src/main.py reads next to the panels: the macro series and the firms' sectors
-    run([sys.executable, ROOT / "src" / "preprocess" / "preprocess_exog.py", "--in_dir", d / "fred", "--out_dir", panels], log)
-    meta = pd.read_parquet(d / "metadata.parquet")
-    meta.assign(sector=meta.sic_description)[["ticker", "cik", "sector"]].to_parquet(panels / "metadata.parquet")
     if not args.skip_preprocess:
-        for name, extra in [("complete", []), ("filled", ["--allow_missing"])]:
-            n_firms = pd.read_parquet(panels / name / "bs-raw.parquet", columns=["ticker"]).ticker.nunique()
-            if n_firms < 2:
-                print(f"\nskipping preprocess.py for {name}/: {n_firms} firm(s), too few for a train/test split")
-                continue
-            run([sys.executable, ROOT / "src" / "preprocess" / "preprocess.py", "--out_dir", panels / name,
-                 "--norm_mode", args.norm_mode, *extra], log)
-    if not args.skip_targets:
-        run([sys.executable, ROOT / "src" / "preprocess" / "pillar_targets.py", "--panel", panels / "filled",
-             "--metadata", d / "metadata.parquet"], log)
-    print(f"\nDone. Download: {d}\nPanels: {panels} (README.md, report.json; Pillar 2-3 targets in filled/targets/)")
+        run([sys.executable, ROOT / "src" / "preprocess" / "preprocess.py", "--out_dir", panels / "filled"], log)
+    print(f"\nDone. Download: {d}\nPanel: {panels / 'filled'} (README.md and report.json in {panels})")
 
 
 if __name__ == "__main__":

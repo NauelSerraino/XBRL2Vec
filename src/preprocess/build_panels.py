@@ -1,15 +1,11 @@
 """
-Build the two input panels from a finqual download (merged_{balance_sheet,income_stmt,cash_flow}.parquet, plus the
+Build the input panel from a finqual download (merged_{balance_sheet,income_stmt,cash_flow}.parquet, plus the
 optional metadata.parquet of src/download/sec_metadata.py):
 
     python src/preprocess/build_panels.py --download_dir data/in/download_2026-10-25 --out_dir data/in/panels_2026-10-25
 
-Both panels: one ticker per issuer (duplicates removed). Filled: quarters --start..--end (start auto: the first
-quarter with 20 % of firms reporting); complete: --complete_start..--end.
-
-complete/   firms reported in every quarter of the window in all three statements, with no missing value in any line
-            (zeros allowed): the rule behind the Dec-2025 panel (data/in/{bs,ins,cf}-raw.parquet). Nothing is filled;
-            smaller and more reliable.
+One ticker per issuer (duplicates removed); quarters --start..--end (start auto: the first quarter with 20 % of firms
+reporting).
 
 filled/     the gap-filling pipeline agreed on 2026-10-25 (evidence: notebooks/00_data_holes_and_filling.ipynb). A 0 or a NaN
             counts as missing. In this order:
@@ -38,9 +34,9 @@ filled/     the gap-filling pipeline agreed on 2026-10-25 (evidence: notebooks/0
             Missing quarters before an item's first or after its last value (firm not reporting yet / any more) stay
             NaN. mask.parquet codes every cell (see CODES).
 
-Output per panel: {bs,ins,cf}-raw.parquet (ticker, features, one column per quarter: the format read by
-src/preprocess/preprocess.py); filled/ also mask.parquet, firms.parquet; out_dir/duplicates.parquet,
-out_dir/report.json, out_dir/README.md.
+Output: filled/{bs,ins,cf}-raw.parquet (ticker, features, one column per quarter, in dollars: the format read by
+src/preprocess/preprocess.py and src/preprocess/fingerprint.py), filled/mask.parquet (how each cell was obtained, CODES),
+filled/firms.parquet; out_dir/duplicates.parquet, out_dir/report.json, out_dir/README.md.
 """
 from __future__ import annotations
 
@@ -79,6 +75,7 @@ QUARTER = re.compile(r"^\d{4}Q[1-4]$")
 # --------------------------------------------------------------------------------------------------------------------
 
 def quarter_range(start: str, end: str) -> list[str]:
+    """Every quarter label from start to end, both included ("2023Q3", "2024Q1" -> 2023Q3, 2023Q4, 2024Q1)."""
     (y0, q0), (y1, q1) = (int(start[:4]), int(start[-1])), (int(end[:4]), int(end[-1]))
     out, y, q = [], y0, q0
     while (y, q) <= (y1, q1):
@@ -150,13 +147,13 @@ def deduplicate(raw: pd.DataFrame, meta: pd.DataFrame, quarters: list[str]) -> t
     tickers = pd.Index(raw.ticker.unique())
     parent = {t: t for t in tickers}
 
-    def find(x):
+    def find(x):                                   # union-find: the root ticker of x's issuer
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    def union(group):
+    def union(group):                              # put all these tickers in one issuer
         group = [t for t in group if t in parent]
         for t in group[1:]:
             parent[find(t)] = find(group[0])
@@ -187,19 +184,7 @@ def deduplicate(raw: pd.DataFrame, meta: pd.DataFrame, quarters: list[str]) -> t
 
 
 # --------------------------------------------------------------------------------------------------------------------
-# Panel 1: complete
-# --------------------------------------------------------------------------------------------------------------------
-
-def complete_panel(raw: pd.DataFrame, quarters: list[str]) -> pd.DataFrame:
-    """Firms present in all three statements with no NaN in any line and quarter of the window (zeros allowed)."""
-    has_nan = raw[quarters].isna().any(axis=1).groupby(raw.ticker).any()
-    n_stmt = raw.groupby("ticker").stmt.nunique()
-    ok = n_stmt[(n_stmt == 3)].index.difference(has_nan[has_nan].index)
-    return raw[raw.ticker.isin(ok)].reset_index(drop=True)
-
-
-# --------------------------------------------------------------------------------------------------------------------
-# Panel 2: filled
+# The filled panel
 # --------------------------------------------------------------------------------------------------------------------
 
 def _holes(o: np.ndarray):
@@ -381,14 +366,12 @@ def write_panel(frame: pd.DataFrame, quarters: list[str], out: Path) -> None:
 
 
 def main() -> None:
+    """Load the download, fix the window, remove duplicates, fill the panel, write it with its mask, report and README."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--download_dir", type=Path, required=True)
     p.add_argument("--out_dir", type=Path, default=None, help="Default: data/in/panels_<download date>.")
     p.add_argument("--start", default="auto",
                    help="First quarter of the filled panel; auto: the first quarter in which 20 %% of firms report total assets.")
-    p.add_argument("--complete_start", default="2011Q1",
-                   help="First quarter of the complete panel (every firm must report in every quarter from here: an earlier "
-                        "start keeps fewer firms; on the 2025-11-10 download 2010Q1 / 2011Q1 / 2012Q1 give 826 / 1,989 / 2,230).")
     p.add_argument("--end", default=None, help="Default: the last quarter most firms have reported (see infer_end).")
     args = p.parse_args()
     name = args.download_dir.name
@@ -412,12 +395,6 @@ def main() -> None:
     report["issuers_after_dedup"] = int(raw.ticker.nunique())
     report["tickers_removed_as_duplicates"] = int(report["tickers_in_download"] - report["issuers_after_dedup"])
 
-    comp_quarters = [q for q in quarters if q >= args.complete_start] or quarters
-    comp = complete_panel(raw[["ticker", "stmt", "features"] + comp_quarters], comp_quarters)
-    write_panel(comp, comp_quarters, out / "complete")
-    report["complete_panel_firms"] = int(comp.ticker.nunique())
-    report["complete_window"] = [comp_quarters[0], comp_quarters[-1]]
-
     fye = meta.set_index("ticker").fye_quarter.dropna().astype(int)
     report["fye_known_for_firms"] = int(fye.reindex(raw.ticker.unique()).notna().sum())
     values, mask, firms, rep = filled_panel(raw, quarters, fye)
@@ -431,13 +408,15 @@ def main() -> None:
 
 
 def _jsonable(o):
+    """json.dumps fallback: numpy scalars to Python numbers, anything else to its string."""
     return o.item() if hasattr(o, "item") else str(o)
 
 
 def readme(rep: dict) -> str:
+    """The panel folder's README.md: the counts of each step and the mask codes."""
     f = rep["filled"]
     codes = "\n".join(f"| {k} | {v} |" for k, v in CODES.items())
-    return f"""# Input panels built from `{rep['download_dir']}`
+    return f"""# Input panel built from `{rep['download_dir']}`
 
 Built {rep['built']} by `src/preprocess/build_panels.py` (rules in its docstring), quarters {rep['window'][0]}–{rep['window'][1]}.
 
@@ -445,7 +424,6 @@ Built {rep['built']} by `src/preprocess/build_panels.py` (rules in its docstring
 |---|---|
 | tickers in the download | {rep['tickers_in_download']:,} |
 | issuers after removing duplicates (`duplicates.parquet`) | {rep['issuers_after_dedup']:,} |
-| **complete/**: firms with every line in every quarter ({rep['complete_window'][0]}–{rep['complete_window'][1]}) | **{rep['complete_panel_firms']:,}** |
 | filled: firms alive >= 4 years | {f['firms_alive_4y']:,} |
 | filled: dropped for a hole > 4 quarters in a core item | {f['firms_dropped_core_long_hole']:,} |
 | **filled/**: firms | **{f['firms_filled_panel']:,}** |
@@ -462,7 +440,7 @@ Fiscal-year end known (SEC) for {rep['fye_known_for_firms']:,} firms; the others
 |---|---|
 {codes}
 
-Both folders can be passed to `src/preprocess/preprocess.py --out_dir <folder>` (filled/ with `--allow_missing`).
+Next: `src/preprocess/preprocess.py --out_dir <this folder>/filled`.
 """
 
 

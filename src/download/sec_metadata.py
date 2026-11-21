@@ -41,6 +41,7 @@ def fye_quarter(mmdd: str | float | None) -> int | None:
 
 
 def main() -> None:
+    """Fetch the submissions of every CIK not yet cached, then write metadata.parquet."""
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--download_dir", type=Path, required=True)
     p.add_argument("--user_agent", default=DEFAULT_USER_AGENT)
